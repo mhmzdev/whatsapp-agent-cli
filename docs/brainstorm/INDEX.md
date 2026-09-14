@@ -12,3 +12,4 @@ Thinking artifacts written by /brainstorm before any plan exists; each links for
 
 | Doc | Topic | Leaning toward | Date |
 |---|---|---|---|
+| [relay-first-release](relay-first-release.md) | The first release: one folder, one config, Claude Code first; what carries over from the personal poller and the eight gaps hisab's transport already solves | Python rewrite, standalone — pending the author's answers on language, store format and multiple folders | 2026-09-14 |
