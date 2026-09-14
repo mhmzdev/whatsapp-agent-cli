@@ -1,0 +1,31 @@
+# secrets
+.env
+*.token
+
+# local config (the example config is committed; the real one never is)
+config.yaml
+config-*.yaml
+
+# runtime state (per install, never shared)
+data/
+*.jsonl
+offset
+session_id
+media/
+
+# python, if the rewrite is python
+__pycache__/
+*.pyc
+.venv/
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
+
+# scratch
+scratch-*/
+NOTES.md
+
+# third-party documents never belong here
+*.pdf
