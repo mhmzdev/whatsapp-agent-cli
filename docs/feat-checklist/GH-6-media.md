@@ -30,10 +30,14 @@ Criteria from [#6](https://github.com/mhmzdev/whatsapp-agent-cli/issues/6) (scop
 - **State** — downloads default to the state directory, never the working directory; an explicit `--out` is the caller's and is never swept.
 - **Live checks** — oversize refusal, the unguessable type, and a dead-token download were all run against the installed command, the last one against the real endpoint.
 
+## Findings fixed here
+
+**FINDING-04** — `client.send` used to return only after every part succeeded, so a failure on part three threw away the knowledge that parts one and two had really been delivered: nothing was printed, nothing recorded, and a retry duplicated them. `send_iter` now yields each part as it leaves and the CLI prints and records it immediately, so a partial send is visible and resumable. `send` remains as the eager form for callers that do not care.
+
 ## Findings
 
-**FINDING-07 · Minor · `whatsapp_agent/cli.py`** — `send --file` uploads and then attaches as two requests. If the attach fails, the upload has already been spent against the 12/min media budget and its id is not printed anywhere, so the caller cannot retry the attach without re-uploading. Printing the media id to stderr on an attach failure would fix it cheaply; left out to keep the success path's output clean, and worth revisiting if the manual pass ever hits it.
+**FINDING-07 · FIXED in this branch** — `send --file` uploads and then attaches as two requests, and a failed attach used to lose the spent upload's id. A failed attach now prints `note: the file was uploaded as <id>; retry with --media <id>` to stderr, so the retry costs no second upload. The success path's stdout is unchanged: still one line, the message id. Covered by the check's "partial failures" section.
 
 **FINDING-05 (from #5) — still open.** Global options must precede the subcommand. Now more visible, since `media` and `send` both take options of their own.
 
-**FINDING-04 (from #4) — still open.** A multi-part text send that fails halfway leaves the earlier parts delivered.
+**FINDING-04 (from #4) — FIXED in this branch.** See the note below.

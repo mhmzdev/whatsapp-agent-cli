@@ -254,16 +254,21 @@ class WhatsApp:
         """What `send` would put on the wire: converted, split, numbered."""
         return numbered(chunks(to_whatsapp(text), self.chunk_chars))
 
-    def send(self, to, text):
-        """Send one text, split under the cap. Returns a `Sent(id, text)` per part.
+    def send_iter(self, to, text):
+        """Yield a `Sent(id, text)` as each part leaves, so a caller learns about a
+        delivered part **before** a later one can fail.
 
-        Parts are not spaced by a sleep: the rate limiter already paces sends at
-        the platform's 12/min, and an extra second per part would double the wall
-        clock of a long reply for no benefit.
+        A multi-part send has no transaction behind it: if part three is refused,
+        parts one and two are already on someone's phone. Returning only at the end
+        would throw that knowledge away with the exception, leaving the caller to
+        retry and duplicate what already arrived.
+
+        Parts are not spaced by a sleep: the rate limiter already paces sends at the
+        platform's 12/min, and an extra second per part would double the wall clock
+        of a long reply for no benefit.
         """
         if not to:
             raise WhatsAppError("no_recipient", "send called without a recipient")
-        sent = []
         for part in self.parts_for(text):
             response = self._request("messages", "POST", "/messages", json={
                 "messaging_product": "whatsapp",
@@ -271,8 +276,15 @@ class WhatsApp:
                 "type": "text",
                 "text": {"body": part},
             }, timeout=30)
-            sent.append(Sent(_sent_id(response), part))
-        return sent
+            yield Sent(_sent_id(response), part)
+
+    def send(self, to, text):
+        """Send one text, split under the cap. Returns a `Sent(id, text)` per part.
+
+        The eager form of `send_iter`, for a caller that does not care which parts
+        made it when one fails.
+        """
+        return list(self.send_iter(to, text))
 
 
 def _sent_id(response):

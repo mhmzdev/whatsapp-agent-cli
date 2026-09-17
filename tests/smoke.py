@@ -684,6 +684,40 @@ with tempfile.TemporaryDirectory() as home:
     assert status == errors.CODES["bad_usage"].exit_status, "--dry-run has nothing to rehearse for an attachment"
 print("media get writes one path and sweeps only its own directory; media put prints an id; send --file uploads then attaches; send --media reuses; empty send refused")
 
+# --------------------------------------------------------------------------- partial failures
+section("partial failures")
+with tempfile.TemporaryDirectory() as home:
+    env = {"HOME": home, state.TOKEN_ENV: "secret-token"}
+    sdir = str(Path(home) / "state")
+
+    # a three-part send whose second part is refused: part one really arrived, and
+    # the caller must be told so, or a retry duplicates it
+    long_text = "a" * 4000 + "\n\n" + "b" * 4000 + "\n\n" + "c" * 4000
+    session = FakeSession([FakeResponse(200, {"messages": [{"id": "wamid.p1"}]}),
+                           FakeResponse(400, {"error": {"code": 131009}})])
+    status, out, err = run_cli(["--state-dir", sdir, "send", long_text, "--to", "user:9"], env=env, session=session)
+    assert status == errors.CODES["platform_rejected"].exit_status, (status, err)
+    assert out.strip() == "wamid.p1", f"the delivered part must be printed before the failure: {out!r}"
+    assert store.Store(sdir).seen("wamid.p1"), "and recorded, so a caller can see what went out"
+    assert len(session.calls) == 2, "the send stops at the failure rather than pressing on"
+
+    # an upload that succeeds and an attach that fails: the id must not be lost
+    photo = Path(home) / "chart.png"
+    photo.write_bytes(b"\x89PNG" + b"0" * 32)
+    session = FakeSession([FakeResponse(200, {"id": "media-orphan"}),
+                           FakeResponse(400, {"error": {"code": 131009}})])
+    status, out, err = run_cli(["--state-dir", sdir, "send", "chart", "--to", "user:9", "--file", str(photo)],
+                               env=env, session=session)
+    assert status == errors.CODES["platform_rejected"].exit_status, (status, err)
+    assert "media-orphan" in err and "--media media-orphan" in err, f"the spent upload must be recoverable: {err!r}"
+
+    # attaching an existing id that fails says nothing about uploads, because none happened
+    session = FakeSession([FakeResponse(400, {"error": {"code": 131009}})])
+    status, out, err = run_cli(["--state-dir", sdir, "send", "x", "--to", "user:9", "--media", "media-given"],
+                               env=env, session=session)
+    assert "uploaded" not in err, err
+print("a delivered part is printed and recorded before a later part fails; a spent upload's id survives a failed attach")
+
 # --------------------------------------------------------------------------- module entry point
 section("module entry point")
 proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "--version"], capture_output=True, text=True, cwd=ROOT,

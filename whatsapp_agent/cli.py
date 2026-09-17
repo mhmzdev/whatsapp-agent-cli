@@ -52,7 +52,16 @@ def _send(args, env=None, session=None):
             filename = path.name
         else:
             media_id, mime, filename = args.media, args.type, None
-        sent = client.send_media(to, media_id, caption=args.text, filename=filename, mime=mime)
+        try:
+            sent = client.send_media(to, media_id, caption=args.text, filename=filename, mime=mime)
+        except WhatsAppError:
+            # The upload succeeded and has already cost one of twelve media requests
+            # a minute. Say what the id is, so a retry attaches it instead of
+            # uploading the same bytes again.
+            if args.file:
+                print(f"note: the file was uploaded as {media_id}; retry with --media {media_id}",
+                      file=sys.stderr, flush=True)
+            raise
         store.add(sent.id, "out", sent.text)
         print(sent.id)
         return
@@ -69,9 +78,11 @@ def _send(args, env=None, session=None):
         return
 
     client = WhatsApp(resolve_token(args.token_file, env=env), session=session)
-    for sent in client.send(to, args.text):
+    # send_iter, not send: a part that made it is printed and recorded before a
+    # later part can fail, so a failure never hides what was already delivered.
+    for sent in client.send_iter(to, args.text):
         store.add(sent.id, "out", sent.text)
-        print(sent.id)
+        print(sent.id, flush=True)
 
 
 BACKOFF_START = 1
