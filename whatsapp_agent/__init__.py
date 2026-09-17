@@ -10,11 +10,27 @@ nothing about coding agents, folders, permissions, sessions or models.
 
 from importlib.metadata import PackageNotFoundError, version as _version
 
-from .errors import AuthError, WhatsAppError, classify
+from .client import Sent, WhatsApp
+from .errors import CODES, AuthError, WhatsAppError, classify
+from .state import resolve_token, state_dir
+from .store import Store
 
 try:
     __version__ = _version("whatsapp-agent")
 except PackageNotFoundError:  # a source checkout that was never installed
     __version__ = "0.0.0+dev"
 
-__all__ = ["__version__", "AuthError", "WhatsAppError", "classify"]
+# The names a dependent imports. `requests` is still not imported until a
+# WhatsApp client is actually constructed.
+__all__ = [
+    "__version__",
+    "WhatsApp",
+    "Sent",
+    "Store",
+    "AuthError",
+    "WhatsAppError",
+    "CODES",
+    "classify",
+    "resolve_token",
+    "state_dir",
+]

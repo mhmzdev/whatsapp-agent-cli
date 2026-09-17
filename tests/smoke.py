@@ -759,6 +759,40 @@ with tempfile.TemporaryDirectory() as home:
 assert "errors.md" in (ROOT / "README.md").read_text(encoding="utf-8"), "the README points at the table"
 print(f"{len(doc_rows)} codes documented, exit statuses and retry verdicts agreeing across CODES, docs/errors.md and the errors command")
 
+# --------------------------------------------------------------------------- readme
+section("readme")
+readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+# the public API the Python example promises
+for name in ("WhatsApp", "Store", "WhatsAppError", "Sent", "classify", "CODES"):
+    assert name in whatsapp_agent.__all__ and hasattr(whatsapp_agent, name), f"README imports {name}, package does not export it"
+for method in ("send_iter", "poll", "download", "upload", "send_media", "typing"):
+    assert hasattr(whatsapp_agent.WhatsApp, method), f"README documents WhatsApp.{method}, which does not exist"
+
+# every whatsapp-agent command shown in the README really exists
+shown = set(re.findall(r"^whatsapp-agent (?:--\S+ \S+ )*([a-z]+)", readme, re.MULTILINE))
+shown |= set(re.findall(r"^\| `([a-z]+)[ <`]", readme, re.MULTILINE))
+help_text = run_cli(["--help"])[1]
+for command in sorted(shown):
+    assert command in help_text, f"README shows `whatsapp-agent {command}`, which --help does not list"
+assert {"send", "recv", "media", "errors"} <= shown, f"the README stopped documenting a command: {shown}"
+
+# claims that would quietly rot
+assert f'pip install whatsapp-agent' in readme, "the README must name the distribution, not the repo"
+assert "[transcribe]" in readme, "the optional extra is part of the install story"
+assert state.TOKEN_ENV in readme, "the token env var must be named"
+assert "docs/errors.md" in readme and "whatsapp-agent errors" in readme
+# markdown emphasis sits inside the sentence, so match on the words, not the literal
+assert re.search(r"before\W+(\*\*)?the subcommand", readme), "the globals-first gotcha stays documented"
+declared_extras = ["transcribe"]
+for extra in declared_extras:
+    assert f"[{extra}]" in readme, f"pyproject declares the {extra} extra; the README never mentions it"
+
+# nothing from a personal setup
+for leak in ("_hisab", "_loop", "/Users/", "vault", "VPS", "hamza.6"):
+    assert leak.lower() not in readme.lower(), f"README leaks {leak!r}"
+print(f"README's {len(shown)} commands all exist, its Python example only uses exported names, and it names the extra, the env var and the error table")
+
 # --------------------------------------------------------------------------- module entry point
 section("module entry point")
 proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "--version"], capture_output=True, text=True, cwd=ROOT,
