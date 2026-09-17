@@ -13,6 +13,7 @@ Up: [docs/INDEX.md](../INDEX.md). Written by `/create-plan` into `backlog/`; `/i
 ## Backlog
 | Plan | Problem it solves | Depends on |
 |---|---|---|
+| [GH-5-recv](backlog/GH-5-recv.md) | Nothing can read what arrives: adds the long-poll, the cursor written only after a batch, dedup, backoff, and the creator record that retires `--to` | #4 (merged) |
 
 ## Active
 | Plan | Started | Issue |
