@@ -17,6 +17,7 @@ Up: [docs/INDEX.md](../INDEX.md). Written by `/create-plan` into `backlog/`; `/i
 ## Active
 | Plan | Started | Issue |
 |---|---|---|
+| [GH-14-error-docs](active/GH-14-error-docs.md) | 2026-09-17 | [#14](https://github.com/mhmzdev/whatsapp-agent-cli/issues/14) |
 
 ## Completed
 | Plan | Shipped | Summary |
