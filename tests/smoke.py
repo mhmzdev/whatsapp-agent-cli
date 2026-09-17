@@ -13,10 +13,10 @@ checkout as well as an installed package.
 import contextlib
 import io
 import os
+import re
 import subprocess
 import sys
 import tempfile
-import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,6 +30,23 @@ FORBIDDEN = ("Traceback", 'HTTP', '{"error"', "OAuthException", "gemini", "opena
 
 def section(title):
     print(f"\n=== {title}")
+
+
+def project_fields_regex(text):
+    """name and version out of pyproject.toml without a TOML parser.
+
+    tomllib arrived in 3.11 and the package supports 3.10, so the check cannot
+    depend on it. Only these two fields are ever read here, and both are plain
+    strings at the top of [project]. Where tomllib does exist, the version
+    section below asserts this parser agrees with it.
+    """
+    body = text.split("[project]", 1)[1].split("\n[", 1)[0]
+    found = {}
+    for key in ("name", "version"):
+        match = re.search(rf'^{key}\s*=\s*"([^"]+)"', body, re.MULTILINE)
+        assert match, f"no {key} in [project]"
+        found[key] = match.group(1)
+    return found
 
 
 def run_cli(argv, env=None):
@@ -46,7 +63,16 @@ def run_cli(argv, env=None):
 
 # --------------------------------------------------------------------------- version
 section("version")
-pyproject = tomllib.load(open(ROOT / "pyproject.toml", "rb"))["project"]
+raw = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+pyproject = project_fields_regex(raw)
+try:
+    import tomllib  # 3.11+
+except ModuleNotFoundError:
+    parsed_by = "regex (no tomllib before 3.11)"
+else:
+    real = tomllib.loads(raw)["project"]
+    assert {k: real[k] for k in pyproject} == pyproject, f"{pyproject} disagrees with tomllib {real}"
+    parsed_by = "regex, agreeing with tomllib"
 assert pyproject["name"] == "whatsapp-agent", pyproject["name"]
 declared = pyproject["version"]
 assert declared.count(".") == 2 and all(p.isdigit() for p in declared.split(".")), declared
@@ -54,7 +80,7 @@ installed = whatsapp_agent.__version__
 assert installed == declared or installed == "0.0.0+dev", f"{installed} vs {declared}"
 status, out, err = run_cli(["--version"])
 assert status == 0 and installed in out, (status, out)
-print(f"pyproject {declared}; package reports {installed}; --version agrees")
+print(f"pyproject {declared} via {parsed_by}; package reports {installed}; --version agrees")
 
 # --------------------------------------------------------------------------- errors
 section("errors")

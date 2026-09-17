@@ -5,7 +5,7 @@ issue: 2
 timestamp: 2026-09-17T00:00:00Z
 ---
 
-# GH-2-package-skeleton — acceptance checklist   (8 proven · 1 manual · 0 failing)
+# GH-2-package-skeleton — acceptance checklist   (10 proven · 0 manual · 0 failing)
 
 Criteria from [#2](https://github.com/mhmzdev/whatsapp-agent-cli/issues/2) and the plan. Everything marked `[x]` was run this session against the working tree; the installed-package checks used a venv built from this branch.
 
@@ -18,7 +18,8 @@ Criteria from [#2](https://github.com/mhmzdev/whatsapp-agent-cli/issues/2) and t
 - [x] `tests/smoke.py` runs with no network and no token, and `check:` in `AGENTS.md` names it — run repeatedly this session, including from the installed package
 - [x] The "no check yet" fallback is gone from `tests.yml`; the workflow now runs the check unconditionally — `grep -c 'does not exist yet' .github/workflows/tests.yml` prints 0
 - [x] The built wheel installs in a clean venv and runs — `python -m build` → `twine check` PASSED for both artifacts → clean venv → `whatsapp-agent --version`
-- [?] CI is green on all four Python versions — the check ran locally on 3.11 only; the matrix proves 3.10, 3.12 and 3.13 when the PR opens
+- [x] CI is green on 3.10, 3.11, 3.12 and 3.13 — the first run failed on 3.10 and the fix is below
+- [x] The check runs on 3.10, which has no `tomllib` — proven twice: green on the 3.10 matrix leg, and locally by running the check with `tomllib` blocked from `sys.meta_path`
 
 ## Conventions
 
@@ -26,6 +27,10 @@ Criteria from [#2](https://github.com/mhmzdev/whatsapp-agent-cli/issues/2) and t
 - **Failures** — five codes, unique exit statuses, fixed messages. The check fails if a message ever contains `Traceback`, `HTTP`, an error body or a provider name. A traceback prints only when `WHATSAPP_AGENT_DEBUG` is set.
 - **Privacy** — no path from the author's machine, no token, no personal reference in code, tests or packaging.
 - **Dependencies** — exactly one runtime dependency, and `import whatsapp_agent` does not pull it in at import time.
+
+## What CI caught
+
+The first matrix run failed on 3.10 only: `tests/smoke.py` imported `tomllib`, which arrived in 3.11, while the package advertises `requires-python = ">=3.10"`. The check now reads the two fields it needs (`name`, `version`) with a small regex, and where `tomllib` does exist it asserts the regex agrees with it — so the 3.10 path is exercised on every version, not only on 3.10. Nothing in `whatsapp_agent/` was affected; the bug was in the check alone.
 
 ## Findings
 
