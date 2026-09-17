@@ -14,7 +14,9 @@ the network unless a caller passes a real session or lets it default to
 
 import time
 from collections import namedtuple
+from pathlib import Path
 
+from . import media as media_types
 from .errors import AuthError, WhatsAppError
 from .ratelimit import DEFAULT_LIMITS, RateLimiter
 from .text import DEFAULT_CHUNK, chunks, numbered, to_whatsapp
@@ -156,20 +158,117 @@ class WhatsApp:
         except WhatsAppError:
             return False
 
+    def download(self, media_id, dest_dir):
+        """Fetch media in the platform's two hops: metadata, then the bytes.
+
+        Written to a temp name and renamed only once the body is complete, so a
+        failure never leaves a half-file that looks downloaded. Returns
+        `(path, mime)`.
+        """
+        meta = self._request("media_get", "GET", f"/media/{media_id}", timeout=30)
+        try:
+            info = meta.json() or {}
+        except Exception as exc:  # noqa: BLE001
+            raise WhatsAppError("platform_rejected", f"media {media_id}: metadata was not JSON") from exc
+        url = info.get("url")
+        if not url:
+            raise WhatsAppError("platform_rejected", f"media {media_id}: metadata carried no url")
+        mime = info.get("mime_type", "")
+
+        self.limits.acquire("media_get")
+        try:
+            response = self._session.request("GET", url, headers=self._headers, timeout=60)
+        except self._transport_errors as exc:
+            raise WhatsAppError("platform_unavailable", f"media {media_id}: {exc}") from exc
+        if response.status_code == 404:
+            # The url is short-lived; the media id is not. Re-fetching is the fix.
+            raise WhatsAppError("media_url_expired", f"media {media_id}: HTTP 404 on the download url")
+        self._checked(response, "GET", f"media {media_id} bytes")
+
+        dest = Path(dest_dir)
+        dest.mkdir(parents=True, exist_ok=True)
+        path = dest / f"{media_id}{media_types.extension_for(mime)}"
+        tmp = path.with_name(path.name + ".part")
+        try:
+            tmp.write_bytes(response.content)
+            tmp.replace(path)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+        return path, mime
+
+    def upload(self, path, mime=None):
+        """Upload a local file, returning its media id.
+
+        The size cap is checked here rather than by the platform: a refusal costs
+        one of twelve requests a minute, and the answer is knowable locally.
+        """
+        path = Path(path)
+        if not path.is_file():
+            raise WhatsAppError("bad_usage", f"{path} is not a file")
+        mime = mime or media_types.guess_type(path)
+        if not mime:
+            raise WhatsAppError("bad_usage", f"cannot tell the type of {path.name}; pass --type")
+        size = path.stat().st_size
+        cap = media_types.cap_for(mime)
+        if size > cap:
+            raise WhatsAppError("media_too_large",
+                                f"{path.name} is {size // 1024} KB; the cap for {mime} is {cap // 1024} KB")
+        with path.open("rb") as handle:
+            response = self._request("media_post", "POST", "/media",
+                                     files={"file": (path.name, handle, mime)},
+                                     data={"messaging_product": "whatsapp", "type": mime},
+                                     timeout=60)
+        try:
+            media_id = (response.json() or {}).get("id")
+        except Exception:  # noqa: BLE001
+            media_id = None
+        if not media_id:
+            raise WhatsAppError("platform_rejected", f"upload of {path.name} returned no media id")
+        return media_id
+
+    def send_media(self, to, media_id, caption=None, filename=None, mime=None):
+        """Attach an uploaded file to a message. Returns one `Sent`.
+
+        A caption is not chunked: the platform's caption limit is far below a text
+        body's, and quietly splitting an attachment's caption across messages would
+        be worse than letting the platform refuse it.
+        """
+        if not to:
+            raise WhatsAppError("no_recipient", "send_media called without a recipient")
+        kind = media_types.kind_for(mime)
+        payload = {"id": media_id}
+        if caption:
+            payload["caption"] = to_whatsapp(caption)
+        if kind == "document" and filename:
+            payload["filename"] = filename
+        response = self._request("messages", "POST", "/messages", json={
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": kind,
+            kind: payload,
+        }, timeout=30)
+        return Sent(_sent_id(response), payload.get("caption") or f"<{kind} {media_id}>")
+
     def parts_for(self, text):
         """What `send` would put on the wire: converted, split, numbered."""
         return numbered(chunks(to_whatsapp(text), self.chunk_chars))
 
-    def send(self, to, text):
-        """Send one text, split under the cap. Returns a `Sent(id, text)` per part.
+    def send_iter(self, to, text):
+        """Yield a `Sent(id, text)` as each part leaves, so a caller learns about a
+        delivered part **before** a later one can fail.
 
-        Parts are not spaced by a sleep: the rate limiter already paces sends at
-        the platform's 12/min, and an extra second per part would double the wall
-        clock of a long reply for no benefit.
+        A multi-part send has no transaction behind it: if part three is refused,
+        parts one and two are already on someone's phone. Returning only at the end
+        would throw that knowledge away with the exception, leaving the caller to
+        retry and duplicate what already arrived.
+
+        Parts are not spaced by a sleep: the rate limiter already paces sends at the
+        platform's 12/min, and an extra second per part would double the wall clock
+        of a long reply for no benefit.
         """
         if not to:
             raise WhatsAppError("no_recipient", "send called without a recipient")
-        sent = []
         for part in self.parts_for(text):
             response = self._request("messages", "POST", "/messages", json={
                 "messaging_product": "whatsapp",
@@ -177,8 +276,15 @@ class WhatsApp:
                 "type": "text",
                 "text": {"body": part},
             }, timeout=30)
-            sent.append(Sent(_sent_id(response), part))
-        return sent
+            yield Sent(_sent_id(response), part)
+
+    def send(self, to, text):
+        """Send one text, split under the cap. Returns a `Sent(id, text)` per part.
+
+        The eager form of `send_iter`, for a caller that does not care which parts
+        made it when one fails.
+        """
+        return list(self.send_iter(to, text))
 
 
 def _sent_id(response):
