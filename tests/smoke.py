@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import whatsapp_agent  # noqa: E402
-from whatsapp_agent import cli, client, errors, ratelimit, state, store, text  # noqa: E402
+from whatsapp_agent import cli, client, errors, media, ratelimit, state, store, text  # noqa: E402
 
 FORBIDDEN = ("Traceback", 'HTTP', '{"error"', "OAuthException", "gemini", "openai")
 
@@ -159,7 +159,7 @@ status, out, err = run_cli(["--help"])
 assert status == 0, status
 for name in ("send", "recv", "media", "transcribe"):
     assert name in out, f"--help does not list {name}"
-stubs = [(["media", "get", "abc"], 6), (["media", "put", "f.png"], 6), (["transcribe", "note.ogg"], 7)]
+stubs = [(["transcribe", "note.ogg"], 7)]
 for argv, issue in stubs:
     status, out, err = run_cli(argv)
     assert status == errors.CODES["not_implemented"].exit_status, (argv, status)
@@ -534,6 +534,156 @@ with tempfile.TemporaryDirectory() as home:
     assert err.count("retrying in") == 2 and "unreachable" in err, err
 print("a kill mid-batch repeats rather than loses; follow backs off 1s then 2s and recovers; ctrl-c exits 130 with the cursor at the last complete batch")
 
+# --------------------------------------------------------------------------- media types
+section("media types")
+assert media.extension_for("audio/ogg; codecs=opus") == ".ogg", "a mime type arrives with parameters attached"
+assert media.extension_for("image/jpeg") == ".jpg" and media.extension_for("application/pdf") == ".pdf"
+assert media.extension_for("application/x-unknown") == "", "an unknown type gets no extension, not a wrong one"
+assert media.cap_for("image/png") == 5 * media.MB
+assert media.cap_for("image/webp") == 500 * 1024, "a sticker's cap is tighter than an image's"
+assert media.cap_for("application/pdf") == 16 * media.MB and media.cap_for("anything/else") == 16 * media.MB
+assert media.kind_for("image/png") == "image" and media.kind_for("application/pdf") == "document"
+assert media.kind_for("image/webp") == "document", "a webp keeps its filename rather than being re-encoded"
+assert media.guess_type("x.png") == "image/png" and media.guess_type("x.unheardof") is None
+print("prefix matching survives codec parameters; caps differ by type; images attach as images, everything else as documents")
+
+# --------------------------------------------------------------------------- media transfer
+section("media transfer")
+
+
+class FakeBytes(FakeResponse):
+    def __init__(self, status_code, content=b"", ):
+        super().__init__(status_code, None, "")
+        self.content = content
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    meta = FakeResponse(200, {"url": "https://lookaside.example/abc", "mime_type": "audio/ogg; codecs=opus"})
+    wa, session = make_client([meta, FakeBytes(200, b"OggS-fake-bytes")])
+    path, mime = wa.download("media-1", tmp)
+    assert path.name == "media-1.ogg" and path.read_bytes() == b"OggS-fake-bytes", path
+    assert session.calls[0]["url"].endswith("/media/media-1")
+    assert session.calls[1]["url"] == "https://lookaside.example/abc"
+    assert session.calls[1]["headers"]["Authorization"] == "Bearer secret-token", "the byte hop carries the token too"
+    assert not list(Path(tmp).glob("*.part")), "no temp file survives a good download"
+
+    wa, _ = make_client([FakeResponse(200, {"mime_type": "image/png"})])
+    for responses, want in [
+        ([FakeResponse(200, {"mime_type": "image/png"})], "platform_rejected"),          # metadata with no url
+        ([meta, FakeBytes(404)], "media_url_expired"),
+        ([meta, FakeBytes(500)], "platform_unavailable"),
+        ([FakeResponse(401, {"error": {"code": 190}})], "auth"),
+    ]:
+        wa, _ = make_client(list(responses))
+        try:
+            wa.download("media-x", tmp)
+            raise AssertionError(f"expected {want}")
+        except errors.WhatsAppError as exc:
+            assert exc.code == want, (want, exc.code)
+    assert not list(Path(tmp).glob("media-x*")), "a failed download leaves nothing behind"
+
+    photo = Path(tmp) / "chart.png"
+    photo.write_bytes(b"\x89PNG" + b"0" * 2048)
+    wa, session = make_client([FakeResponse(200, {"id": "media-up"})])
+    assert wa.upload(photo) == "media-up"
+    form = session.calls[0]
+    assert form["data"] == {"messaging_product": "whatsapp", "type": "image/png"}, form["data"]
+    assert form["files"]["file"][0] == "chart.png" and form["files"]["file"][2] == "image/png"
+
+    big = Path(tmp) / "huge.png"
+    big.write_bytes(b"0" * (6 * media.MB))
+    wa, session = make_client([FakeResponse(200, {"id": "never"})])
+    try:
+        wa.upload(big)
+        raise AssertionError("expected media_too_large")
+    except errors.WhatsAppError as exc:
+        assert exc.code == "media_too_large" and exc.exit_status == 10, exc.code
+    assert session.calls == [], "the cap is checked before a request is spent"
+
+    odd = Path(tmp) / "thing.unheardof"
+    odd.write_bytes(b"x")
+    wa, _ = make_client([])
+    try:
+        wa.upload(odd)
+        raise AssertionError("an unguessable type must ask for --type")
+    except errors.WhatsAppError as exc:
+        assert exc.code == "bad_usage", exc.code
+    wa, _ = make_client([FakeResponse(200, {"id": "media-generic"})])
+    assert wa.upload(odd, "application/octet-stream") == "media-generic", "an explicit --type unblocks an unguessable file"
+
+    wa, session = make_client([FakeResponse(200, {"messages": [{"id": "wamid.att"}]})])
+    sent = wa.send_media("user:9", "media-up", caption="**look**", filename="chart.png", mime="image/png")
+    body = session.calls[0]["json"]
+    assert body["type"] == "image" and body["image"] == {"id": "media-up", "caption": "*look*"}, body
+    assert "filename" not in body["image"], "a photo has no filename field"
+    assert sent.id == "wamid.att"
+
+    wa, session = make_client([FakeResponse(200, {"messages": [{"id": "wamid.doc"}]})])
+    wa.send_media("user:9", "media-pdf", caption=None, filename="report.pdf", mime="application/pdf")
+    body = session.calls[0]["json"]
+    assert body["type"] == "document" and body["document"] == {"id": "media-pdf", "filename": "report.pdf"}, body
+print("two hops with the token on both; a failure leaves no partial file; caps refuse before spending a request; photos attach as images, PDFs as named documents")
+
+# --------------------------------------------------------------------------- media command and attaching
+section("media command and attaching")
+with tempfile.TemporaryDirectory() as home:
+    env = {"HOME": home, state.TOKEN_ENV: "secret-token"}
+    sdir = Path(home) / "state"
+    meta = FakeResponse(200, {"url": "https://lookaside.example/p", "mime_type": "image/png"})
+
+    session = FakeSession([meta, FakeBytes(200, b"PNGDATA")])
+    status, out, err = run_cli(["--state-dir", str(sdir), "media", "get", "media-7"], env=env, session=session)
+    assert status == 0, (status, err)
+    written = Path(out.strip())
+    # .resolve() on both sides: the state dir resolves symlinks (/var -> /private/var on macOS)
+    assert written.read_bytes() == b"PNGDATA" and written.parent == (sdir / "media").resolve(), written
+    assert out.strip().endswith("media-7.png") and len(out.strip().splitlines()) == 1, "one line, the path, nothing else"
+
+    outdir = Path(home) / "elsewhere"
+    session = FakeSession([meta, FakeBytes(200, b"PNGDATA")])
+    status, out, err = run_cli(["--state-dir", str(sdir), "media", "get", "media-7", "--out", str(outdir)], env=env, session=session)
+    assert Path(out.strip()).parent == outdir.resolve(), out
+
+    # sweeping: an old file in our media dir goes, the caller's --out never does
+    old_ours = (sdir / "media").resolve() / "old.png"
+    old_ours.write_bytes(b"x")
+    old_theirs = outdir / "old.png"
+    old_theirs.write_bytes(b"x")
+    ancient = time.time() - 48 * 3600
+    os.utime(old_ours, (ancient, ancient))
+    os.utime(old_theirs, (ancient, ancient))
+    session = FakeSession([FakeResponse(200, {"id": "media-up"})])
+    photo = Path(home) / "chart.png"
+    photo.write_bytes(b"\x89PNG" + b"0" * 32)
+    status, out, err = run_cli(["--state-dir", str(sdir), "media", "put", str(photo)], env=env, session=session)
+    assert status == 0 and out.strip() == "media-up", (status, out, err)
+    assert not old_ours.exists(), "a download older than --keep-hours is swept"
+    assert old_theirs.exists(), "a file the caller asked for with --out is never swept"
+
+    # send --file uploads then attaches, in one call
+    session = FakeSession([FakeResponse(200, {"id": "media-new"}),
+                           FakeResponse(200, {"messages": [{"id": "wamid.sent"}]})])
+    status, out, err = run_cli(["--state-dir", str(sdir), "send", "the chart", "--to", "user:9", "--file", str(photo)],
+                               env=env, session=session)
+    assert status == 0 and out.strip() == "wamid.sent", (status, out, err)
+    assert session.calls[0]["url"].endswith("/media") and session.calls[1]["json"]["type"] == "image"
+    assert session.calls[1]["json"]["image"]["caption"] == "the chart"
+    assert store.Store(str(sdir)).seen("wamid.sent"), "an attachment is recorded like any other outgoing message"
+
+    # send --media attaches an existing id, and needs no caption
+    session = FakeSession([FakeResponse(200, {"messages": [{"id": "wamid.m"}]})])
+    status, out, err = run_cli(["--state-dir", str(sdir), "send", "--to", "user:9", "--media", "media-old"],
+                               env=env, session=session)
+    assert status == 0 and out.strip() == "wamid.m", (status, out, err)
+    assert len(session.calls) == 1, "an existing id is not re-uploaded"
+
+    status, out, err = run_cli(["--state-dir", str(sdir), "send", "--to", "user:9"], env=env, session=FakeSession([]))
+    assert status == errors.CODES["bad_usage"].exit_status, "a send with neither text nor attachment is a usage error"
+    status, out, err = run_cli(["--state-dir", str(sdir), "send", "x", "--to", "user:9", "--file", str(photo), "--dry-run"],
+                               env=env, session=FakeSession([]))
+    assert status == errors.CODES["bad_usage"].exit_status, "--dry-run has nothing to rehearse for an attachment"
+print("media get writes one path and sweeps only its own directory; media put prints an id; send --file uploads then attaches; send --media reuses; empty send refused")
+
 # --------------------------------------------------------------------------- module entry point
 section("module entry point")
 proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "--version"], capture_output=True, text=True, cwd=ROOT,
@@ -542,7 +692,7 @@ assert proc.returncode == 0, proc.stderr
 assert installed in proc.stdout, proc.stdout
 # a command that is still a stub: this proves the entry point, not the feature,
 # and a real one would resolve real state on the developer's machine.
-proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "media", "get", "abc"], capture_output=True, text=True, cwd=ROOT,
+proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "transcribe", "note.ogg"], capture_output=True, text=True, cwd=ROOT,
                       env={**os.environ, "PYTHONPATH": str(ROOT)})
 assert proc.returncode == errors.CODES["not_implemented"].exit_status, proc.returncode
 assert "Traceback" not in proc.stderr, proc.stderr

@@ -16,6 +16,8 @@ Exit statuses, stable from here on — a script may switch on them:
     7   platform_unavailable  the platform or the network was unreachable; a retry may work
     8   no_recipient          no --to given and no creator recorded yet
     9   another_poller        another process is polling this token; only one may
+    10  media_too_large       the file is over the platform's cap for its type
+    11  media_url_expired     the download url has expired; ask for the media again
     70  internal              anything unclassified (EX_SOFTWARE)
 
 The 6 / 7 split is the one a caller acts on: 7 is worth looping on, 6 never is.
@@ -38,6 +40,8 @@ CODES = {
     "platform_unavailable": Error(7, "the platform is unreachable right now; retrying may help"),
     "no_recipient": Error(8, "no recipient: pass --to, or run recv once so the creator is recorded"),
     "another_poller": Error(9, "another process is polling this token; only one poller is allowed at a time"),
+    "media_too_large": Error(10, "this file is larger than the platform allows for its type"),
+    "media_url_expired": Error(11, "this download link has expired; ask for the media id again"),
     "internal": Error(70, "something went wrong on this side"),
 }
 

@@ -2,11 +2,11 @@
 type: ExecPlan
 slug: GH-6-media
 issue: 6
-status: active
+status: completed
 open_questions: none
 ---
 
-# feat: media — photos and documents in and out, and send learns to attach          🚧 ACTIVE — started 2026-09-17
+# feat: media — photos and documents in and out, and send learns to attach          ✅ COMPLETED — 2026-09-17
 
 ## Problem
 
@@ -30,42 +30,42 @@ open_questions: none
 
 ## Success criteria
 
-- [ ] `media get <id>` downloads and prints one line, the path — `verify: python3 tests/smoke.py`
-- [ ] The extension follows the mime prefix, so `audio/ogg; codecs=opus` becomes `.ogg` — `verify: python3 tests/smoke.py`
-- [ ] A failed metadata hop or a failed byte hop leaves no file behind and exits non-zero — `verify: python3 tests/smoke.py`
-- [ ] A 404 on the byte hop reports that the url expired, since re-fetching is the fix — `verify: python3 tests/smoke.py`
-- [ ] `media put <path>` uploads and prints the id; the request carries `messaging_product`, `type` and the file part — `verify: python3 tests/smoke.py`
-- [ ] A file over its type's cap exits with `media_too_large` **before** any request is made — `verify: python3 tests/smoke.py`
-- [ ] `send --media <id>` attaches; `send --file <path>` uploads then attaches; both accept an optional caption — `verify: python3 tests/smoke.py`
-- [ ] An image is sent as `image`, a PDF as `document` carrying its filename — `verify: python3 tests/smoke.py`
-- [ ] `send` with neither text nor attachment is a usage error, not an empty message — `verify: python3 tests/smoke.py`
-- [ ] Media calls are paced on their own 12/min windows, upload and download separately — `verify: python3 tests/smoke.py`
-- [ ] Files older than `--keep-hours` are swept from the state directory, and an `--out` directory is never touched — `verify: python3 tests/smoke.py`
-- [ ] Repo check passes on 3.10 through 3.13 — `verify: python3 tests/smoke.py` locally, the CI matrix on the PR
-- [ ] Manual: a photo texted from the phone downloads and opens, and a file sent back arrives — `verify: manual 1. whatsapp-agent recv --json, text a photo from the phone, note the media id 2. whatsapp-agent media get <id> and open the printed path 3. whatsapp-agent send "chart" --file <some png>; it arrives on the phone as a photo with that caption`
+- [x] `media get <id>` downloads and prints one line, the path — `verify: python3 tests/smoke.py`
+- [x] The extension follows the mime prefix, so `audio/ogg; codecs=opus` becomes `.ogg` — `verify: python3 tests/smoke.py`
+- [x] A failed metadata hop or a failed byte hop leaves no file behind and exits non-zero — `verify: python3 tests/smoke.py`
+- [x] A 404 on the byte hop reports that the url expired, since re-fetching is the fix — `verify: python3 tests/smoke.py`
+- [x] `media put <path>` uploads and prints the id; the request carries `messaging_product`, `type` and the file part — `verify: python3 tests/smoke.py`
+- [x] A file over its type's cap exits with `media_too_large` **before** any request is made — `verify: python3 tests/smoke.py`
+- [x] `send --media <id>` attaches; `send --file <path>` uploads then attaches; both accept an optional caption — `verify: python3 tests/smoke.py`
+- [x] An image is sent as `image`, a PDF as `document` carrying its filename — `verify: python3 tests/smoke.py`
+- [x] `send` with neither text nor attachment is a usage error, not an empty message — `verify: python3 tests/smoke.py`
+- [x] Media calls are paced on their own 12/min windows, upload and download separately — `verify: python3 tests/smoke.py`
+- [x] Files older than `--keep-hours` are swept from the state directory, and an `--out` directory is never touched — `verify: python3 tests/smoke.py`
+- [x] Repo check passes on 3.10 through 3.13 — `verify: python3 tests/smoke.py` locally, the CI matrix on the PR
+- [?] Manual: a photo texted from the phone downloads and opens, and a file sent back arrives — `verify: manual 1. whatsapp-agent recv --json, text a photo from the phone, note the media id 2. whatsapp-agent media get <id> and open the printed path 3. whatsapp-agent send "chart" --file <some png>; it arrives on the phone as a photo with that caption`
 
 ## Phases
 
 ### Phase 1 — Download
-**Status:** Not started
+**Status:** Done
 - Files: `whatsapp_agent/client.py`, `whatsapp_agent/errors.py`, `tests/smoke.py`
 - Change: `WhatsApp.download(media_id, dest_dir)` doing both hops with status checks, mime-prefix extension mapping, and an atomic write (temp file, then rename) so a failure leaves nothing. `media_url_expired` (exit 11) for a 404 on the byte hop; `media_too_large` (exit 10) reserved here and raised in Phase 2.
 - Test: fake session covers a good fetch, metadata without a url, a 404 on the second hop, and `audio/ogg; codecs=opus`; the check asserts no partial file survives a failure.
 
 ### Phase 2 — Upload
-**Status:** Not started
+**Status:** Done
 - Files: `whatsapp_agent/client.py`, `whatsapp_agent/media.py` (new), `tests/smoke.py`
 - Change: `media.py` holds the mime/extension table, the per-type caps and `guess_type`. `WhatsApp.upload(path, mime=None)` checks the cap first, then posts multipart. Both `media_post` and `media_get` keep their own rate-limit windows.
 - Test: caps refused before any call; the multipart form carries the documented fields; an unknown extension without `--type` is a usage error.
 
 ### Phase 3 — `media` command and `send` attaching
-**Status:** Not started
+**Status:** Done
 - Files: `whatsapp_agent/cli.py`, `tests/smoke.py`
 - Change: `media get|put` wired with `--out` and `--keep-hours` and the sweep; `send` gains `--media` and `--file`, `text` becomes optional when either is given, and `WhatsApp.send_media(to, media_id, caption, filename, mime)` posts the image-or-document body. Sent attachments are recorded in the store like any other outgoing message.
 - Test: end to end through `cli.main` with a fake session and a temp state dir, both attach paths, the usage error, and the sweep.
 
 ### Phase 4 — Checklist and manual pass
-**Status:** Not started
+**Status:** Done
 - Files: `docs/feat-checklist/GH-6-media.md`, `docs/feat-checklist/INDEX.md`
 - Change: record what was proven and the manual steps for the phone.
 - Test: the repo check, and the CI matrix on the PR.
@@ -82,3 +82,12 @@ open_questions: none
 - Transcription — #7.
 - Video and stickers as first-class types: they download like anything else, but nothing special is done for them.
 - `recv --download`, fetching bytes automatically as messages arrive. A caller can pipe ids into `media get`; making the poll loop do it would put an unbounded fetch inside the delivery path.
+
+## What actually happened (2026-09-17)
+
+Three phases of code as planned, with two adjustments:
+
+1. **A downloaded path is printed resolved.** `--out ./here` was printing an unresolved path, which on macOS differs from where the file actually is (`/var` versus `/private/var`). The one line `media get` prints is now absolute and canonical, so `open "$(whatsapp-agent media get <id>)"` works from any directory.
+2. **A webp is treated as a sticker for its cap, and as a document for its type.** The platform's 500 KB sticker cap only makes sense against webp, and re-encoding someone's webp into an `image` message would lose the filename. Both are one-line rules in `media.py` with the reasoning next to them.
+
+Verified beyond the fake session: an oversize file exits 10 **before any request is made**, an unguessable extension exits 2 asking for `--type`, and a download with a dead token exits 4 against the live endpoint.

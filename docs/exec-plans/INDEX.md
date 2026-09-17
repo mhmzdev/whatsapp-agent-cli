@@ -17,11 +17,11 @@ Up: [docs/INDEX.md](../INDEX.md). Written by `/create-plan` into `backlog/`; `/i
 ## Active
 | Plan | Started | Issue |
 |---|---|---|
-| [GH-6-media](active/GH-6-media.md) | 2026-09-17 | [#6](https://github.com/mhmzdev/whatsapp-agent-cli/issues/6) |
 
 ## Completed
 | Plan | Shipped | Summary |
 |---|---|---|
+| [GH-6-media](completed/GH-6-media.md) | 2026-09-17 | `media get` and `media put` with both hops checked, mime-prefix extensions, per-type size caps refused locally, and a sweep that only touches our own directory; `send --file` and `send --media` attach, photos as images and everything else as named documents |
 | [GH-5-recv](completed/GH-5-recv.md) | 2026-09-17 | `whatsapp-agent recv` reads what arrives: long-poll with the cursor written only after a batch, dedup by message id, JSON or human output, `--follow` with exponential backoff, `--typing`, `--replay`, a 409 exiting 9, and the creator record that retires `--to` on `send` |
 | [GH-4-send](completed/GH-4-send.md) | 2026-09-17 | `whatsapp-agent send` reaches the phone: rate limiter, HTTP layer mapping every response onto auth / rejected / unavailable, markdown conversion and `(i/n)` chunking, the message store, and `--dry-run` |
 | [GH-2-package-skeleton](completed/GH-2-package-skeleton.md) | 2026-09-17 | `pip install -e .` gives a working `whatsapp-agent`: version from `pyproject.toml`, five failure codes with unique exit statuses, token from env then `--token-file`, state under XDG and never the cwd, every subcommand present as a stub exiting 5. `tests/smoke.py` is the repo check and CI is now enforcing |

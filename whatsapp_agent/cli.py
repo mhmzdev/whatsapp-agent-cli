@@ -6,7 +6,7 @@ framework into every dependent's environment is a worse library, and this
 surface is small enough that the standard library covers it.
 
 The subcommands below parse their arguments and then fail with
-`not_implemented` until their own ticket lands — #6 media, #7 transcribe. They exit non-zero on purpose: a stub that exits 0 would make an
+`not_implemented` until their own ticket lands — #7 transcribe. They exit non-zero on purpose: a stub that exits 0 would make an
 unimplemented command look like a passing one.
 """
 
@@ -16,8 +16,10 @@ import os
 import sys
 import time
 import traceback
+from pathlib import Path
 
 from . import __version__
+from . import media as media_types
 from .client import WhatsApp
 from .errors import CODES, WhatsAppError, classify, exit_status
 from .state import DEFAULT_PROFILE, TOKEN_ENV, resolve_token, state_dir
@@ -32,12 +34,31 @@ def _todo(command, issue):
 
 
 def _send(args, env=None, session=None):
-    """Send one text. Recipient: --to, else the creator recv recorded (#5)."""
+    """Send a text, or attach a file. Recipient: --to, else the creator recv recorded."""
     directory = state_dir(args.profile, args.state_dir, env=env)
     store = Store(directory)
     to = args.to or store.creator()
     if not to:
         raise WhatsAppError("no_recipient", "no --to and no creator recorded yet")
+
+    if args.file or args.media:
+        if args.dry_run:
+            raise WhatsAppError("bad_usage", "--dry-run has nothing to rehearse for an attachment")
+        client = WhatsApp(resolve_token(args.token_file, env=env), session=session)
+        if args.file:
+            path = Path(args.file).expanduser()
+            mime = args.type or media_types.guess_type(path)
+            media_id = client.upload(path, mime)
+            filename = path.name
+        else:
+            media_id, mime, filename = args.media, args.type, None
+        sent = client.send_media(to, media_id, caption=args.text, filename=filename, mime=mime)
+        store.add(sent.id, "out", sent.text)
+        print(sent.id)
+        return
+
+    if not args.text:
+        raise WhatsAppError("bad_usage", "nothing to send: give some text, --file or --media")
 
     if args.dry_run:
         # Rehearse a long message without spending one: the same conversion and
@@ -97,6 +118,42 @@ def _deliver(message, store, client, as_json, typing):
         client.typing(message.get("id"))
 
 
+def _sweep(directory, keep_hours, now=time.time):
+    """Drop downloads older than keep_hours from our own media directory.
+
+    Only ever this directory: a file the caller asked for with --out is theirs.
+    Returns how many were removed.
+    """
+    media_dir = Path(directory) / "media"
+    if not media_dir.is_dir() or keep_hours <= 0:
+        return 0
+    cutoff = now() - keep_hours * 3600
+    removed = 0
+    for path in media_dir.iterdir():
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _media(args, env=None, session=None):
+    directory = state_dir(args.profile, args.state_dir, env=env)
+    client = WhatsApp(resolve_token(args.token_file, env=env), session=session)
+    _sweep(directory, args.keep_hours)
+
+    if args.media_command == "get":
+        # Resolved, so the one line this prints is an absolute, canonical path a
+        # shell can hand straight to another command.
+        dest = Path(args.out).expanduser().resolve() if args.out else Path(directory) / "media"
+        path, _mime = client.download(args.media_id, dest)
+        print(path)
+        return
+    print(client.upload(Path(args.path).expanduser(), args.type))
+
+
 def _recv(args, env=None, session=None, sleep=time.sleep):
     directory = state_dir(args.profile, args.state_dir, env=env)
     store = Store(directory)
@@ -154,9 +211,12 @@ def build_parser():
     sub = parser.add_subparsers(dest="command", metavar="<command>", required=True)
 
     p_send = sub.add_parser("send", help="send a message to the creator")
-    p_send.add_argument("text", help="the message body; split under the platform cap")
+    p_send.add_argument("text", nargs="?", help="the message body, or the caption when attaching")
     p_send.add_argument("--to", metavar="USER", help="recipient id (default: the creator recv recorded)")
     p_send.add_argument("--dry-run", action="store_true", help="print the parts that would be sent, send nothing")
+    p_send.add_argument("--file", metavar="PATH", help="upload this file and attach it; the text becomes its caption")
+    p_send.add_argument("--media", metavar="ID", help="attach an already-uploaded media id")
+    p_send.add_argument("--type", metavar="MIME", help="content type of --file or --media (default: guessed from the name)")
     p_send.set_defaults(func=_send)
 
     p_recv = sub.add_parser("recv", help="read new messages since the stored cursor")
@@ -170,15 +230,17 @@ def build_parser():
     p_recv.set_defaults(func=_recv)
 
     p_media = sub.add_parser("media", help="download or upload media")
+    p_media.add_argument("--keep-hours", type=int, default=24, metavar="H",
+                         help="sweep downloads in the state dir older than this (default: %(default)s; 0 disables)")
     media_sub = p_media.add_subparsers(dest="media_command", metavar="<get|put>", required=True)
     p_get = media_sub.add_parser("get", help="download media by id")
     p_get.add_argument("media_id")
     p_get.add_argument("--out", metavar="DIR", help="directory to write into (default: the state dir)")
-    p_get.set_defaults(func=lambda args: _todo("media get", 6))
+    p_get.set_defaults(func=_media)
     p_put = media_sub.add_parser("put", help="upload a file and print its media id")
     p_put.add_argument("path")
     p_put.add_argument("--type", metavar="MIME", help="content type (default: guessed from the extension)")
-    p_put.set_defaults(func=lambda args: _todo("media put", 6))
+    p_put.set_defaults(func=_media)
 
     p_tr = sub.add_parser("transcribe", help="turn an audio file into text")
     p_tr.add_argument("path")
@@ -196,6 +258,8 @@ def main(argv=None, env=None, session=None, sleep=None):
     try:
         if args.func is _send:
             _send(args, env=env, session=session)
+        elif args.func is _media:
+            _media(args, env=env, session=session)
         elif args.func is _recv:
             _recv(args, env=env, session=session, **({"sleep": sleep} if sleep else {}))
         else:
