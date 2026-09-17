@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "whatsapp-agent"
+version = "0.1.0"
+description = "A client for the WhatsApp Agent Platform: send, receive, media and transcription, as a library and a command."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Muhammad Hamza" }]
+keywords = ["whatsapp", "cli", "messaging", "agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Chat",
+]
+# One runtime dependency on purpose: anything importing this package inherits it.
+dependencies = ["requests>=2.32"]
+
+[project.optional-dependencies]
+transcribe = ["google-genai>=1.0"]
+dev = ["build", "twine"]
+
+[project.scripts]
+whatsapp-agent = "whatsapp_agent.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/mhmzdev/whatsapp-agent-cli"
+Repository = "https://github.com/mhmzdev/whatsapp-agent-cli"
+Issues = "https://github.com/mhmzdev/whatsapp-agent-cli/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["whatsapp_agent"]
+
+[tool.hatch.build.targets.sdist]
+include = ["whatsapp_agent", "tests", "README.md", "LICENSE", "pyproject.toml"]

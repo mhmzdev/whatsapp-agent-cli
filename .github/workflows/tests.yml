@@ -34,22 +34,12 @@ jobs:
 
       - name: Install the package
         run: |
-          if [ -f pyproject.toml ]; then
-            python -m pip install --upgrade pip
-            pip install -e ".[transcribe]" || pip install -e .
-          else
-            echo "::notice::no pyproject.toml yet — skipping install"
-          fi
+          python -m pip install --upgrade pip
+          pip install -e .
 
-      # The check is the gate. It must run with no network and no token.
-      # The fallback exists only until #2 creates tests/smoke.py; #2 removes it.
+      # The check is the gate. It runs with no network and no token.
       - name: Repo check
-        run: |
-          if [ -f tests/smoke.py ]; then
-            python3 tests/smoke.py
-          else
-            echo "::warning::tests/smoke.py does not exist yet — nothing was verified (see issue #2)"
-          fi
+        run: python3 tests/smoke.py
 
   # One stable context for the branch rulesets to require, whatever the matrix
   # happens to contain. Fails if any matrix leg failed or was skipped.

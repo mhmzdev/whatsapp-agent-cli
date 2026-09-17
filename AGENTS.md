@@ -26,7 +26,15 @@ AGENTS.md        this file; CLAUDE.md imports it
 docs/            brainstorm/, specs/, exec-plans/{backlog,active,completed,superseded}, INDEX.md at every level
 ```
 
-No code yet. This map grows with the first plan.
+```
+whatsapp_agent/
+  __init__.py    the package version, and the names a dependent imports
+  errors.py      THE failure registry: every code, its message and its exit status; AuthError is permanent
+  state.py       where the token comes from (env, then --token-file) and where state lives (XDG, never the cwd)
+  cli.py         the argparse surface; subcommands stay stubs until their own ticket lands
+  __main__.py    python -m whatsapp_agent
+tests/smoke.py   the check: no network, no token, no writes outside a temp dir
+```
 
 ## Not hisab-whatsapp
 
@@ -45,7 +53,8 @@ The relay is where [`hisab-whatsapp`](https://github.com/mhmzdev/hisab-whatsapp)
 
 | What | Command |
 |---|---|
-| The check (run before calling anything done) | `python3 tests/smoke.py` — created by [#2](https://github.com/mhmzdev/whatsapp-agent-cli/issues/2); does not exist yet |
+| The check (run before calling anything done) | `python3 tests/smoke.py` |
+| Install for development | `pip install -e .` (add `[transcribe]` for the voice-note extra) |
 | Bump the version before a promote | `python3 scripts/bump_version.py patch\|minor\|major` |
 | Release | merge a promote PR `develop → main`; `release.yml` publishes to PyPI, tags `v<version>` and cuts the GitHub Release |
 
@@ -73,7 +82,7 @@ board_fields:
   Status: [Backlog, Ready, In progress, In review, Done]
   Priority: [P0, P1, P2]
   Size: [XS, S, M, L, XL]
-check: "python3 tests/smoke.py"  # created by #2; does not exist yet
+check: "python3 tests/smoke.py"
 labels: read with `gh label list --repo mhmzdev/whatsapp-agent-cli`; apply only what exists, none is fine
 branch: "GH-<N>-<kebab-topic>"   # or <kebab-topic> without an issue
 pr:
