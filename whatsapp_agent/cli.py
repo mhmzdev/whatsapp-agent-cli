@@ -35,6 +35,11 @@ def _todo(command, issue):
 
 def _send(args, env=None, session=None):
     """Send a text, or attach a file. Recipient: --to, else the creator recv recorded."""
+    # "you gave me nothing to send" comes before "I do not know who to send it to":
+    # it is the more fundamental mistake, and it needs no state to notice.
+    if not (args.text or args.file or args.media):
+        raise WhatsAppError("bad_usage", "nothing to send: give some text, --file or --media")
+
     directory = state_dir(args.profile, args.state_dir, env=env)
     store = Store(directory)
     to = args.to or store.creator()
@@ -65,9 +70,6 @@ def _send(args, env=None, session=None):
         store.add(sent.id, "out", sent.text)
         print(sent.id)
         return
-
-    if not args.text:
-        raise WhatsAppError("bad_usage", "nothing to send: give some text, --file or --media")
 
     if args.dry_run:
         # Rehearse a long message without spending one: the same conversion and
@@ -253,6 +255,9 @@ def build_parser():
     p_put.add_argument("--type", metavar="MIME", help="content type (default: guessed from the extension)")
     p_put.set_defaults(func=_media)
 
+    p_err = sub.add_parser("errors", help="list every exit code and what it means")
+    p_err.set_defaults(func=_errors)
+
     p_tr = sub.add_parser("transcribe", help="turn an audio file into text")
     p_tr.add_argument("path")
     p_tr.set_defaults(func=lambda args: _todo("transcribe", 7))
@@ -284,10 +289,24 @@ def main(argv=None, env=None, session=None, sleep=None):
     return 0
 
 
+def _errors(args):
+    """Print the code table from the installed package — always the version running."""
+    rows = sorted(CODES.items(), key=lambda item: item[1].exit_status)
+    width = max(len(name) for name, _ in rows)
+    print(f"{'CODE'.ljust(width)}  EXIT  RETRY  MEANING")
+    for name, entry in rows:
+        retry = "yes" if entry.retry else "no"
+        print(f"{name.ljust(width)}  {str(entry.exit_status).rjust(4)}  {retry.ljust(5)}  {entry.message}")
+    print("\nExit 130 is Ctrl-C, not a failure. Full table with what to do about each:")
+    print("https://github.com/mhmzdev/whatsapp-agent-cli/blob/main/docs/errors.md")
+
+
 def _fail(exc, code, env):
     message = CODES[code].message if code in CODES else str(exc)
     detail = getattr(exc, "detail", "") or str(exc)
-    print(f"error: {message}", file=sys.stderr)
+    # The code in brackets is what docs/errors.md is keyed by: something a user can
+    # search for, quote in an issue, or grep out of a log.
+    print(f"error [{code}]: {message}", file=sys.stderr)
     if detail and detail != message:
         print(f"detail: {detail}", file=sys.stderr)
     if (env.get(DEBUG_ENV) or "").strip() not in ("", "0"):
