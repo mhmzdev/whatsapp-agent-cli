@@ -23,6 +23,7 @@ Format: every document here is markdown with a small YAML frontmatter (`type` re
 
 | File | Read it when |
 |---|---|
+| [`errors.md`](errors.md) | a command failed and you want to know what the code means and whether retrying helps |
 | [`README.md`](../README.md) | you want the product definition and the feature list |
 | [`.agents/rules/`](../.agents/rules/) | you are writing anything; today: [`privacy.md`](../.agents/rules/privacy.md) |
 | [`.agents/skills/README.md`](../.agents/skills/README.md) | you are running a lifecycle skill or moving a board card |

@@ -718,6 +718,47 @@ with tempfile.TemporaryDirectory() as home:
     assert "uploaded" not in err, err
 print("a delivered part is printed and recorded before a later part fails; a spent upload's id survives a failed attach")
 
+# --------------------------------------------------------------------------- documented codes
+section("documented codes")
+doc_path = ROOT / "docs" / "errors.md"
+doc_rows = {}
+for line in doc_path.read_text(encoding="utf-8").splitlines():
+    match = re.match(r"^\|\s*`([a-z_]+)`\s*\|\s*(\d+)\s*\|\s*([^|]+)\|", line)
+    if match:
+        name, exit_status, retry = match.group(1), int(match.group(2)), match.group(3).strip().lower()
+        doc_rows[name] = (exit_status, "yes" in retry)
+
+undocumented = sorted(set(errors.CODES) - set(doc_rows))
+assert not undocumented, f"codes with no row in docs/errors.md: {undocumented}"
+invented = sorted(set(doc_rows) - set(errors.CODES))
+assert not invented, f"docs/errors.md documents codes that do not exist: {invented}"
+for name, (exit_status, retry) in doc_rows.items():
+    assert errors.CODES[name].exit_status == exit_status, f"{name}: doc says exit {exit_status}, code says {errors.CODES[name].exit_status}"
+    assert errors.CODES[name].retry == retry, f"{name}: doc and code disagree on whether retrying helps"
+assert errors.CODES["platform_unavailable"].retry is True, "the one retryable code must say so"
+assert sum(1 for e in errors.CODES.values() if e.retry) == 1, "only unavailability is worth retrying"
+
+status, out, err = run_cli(["errors"])
+assert status == 0, err
+printed = {}
+for line in out.splitlines():
+    parts = line.split()
+    if parts and parts[0] in errors.CODES:
+        printed[parts[0]] = (int(parts[1]), parts[2] == "yes")
+assert printed == doc_rows, f"the errors command and the document disagree: {set(printed.items()) ^ set(doc_rows.items())}"
+assert "errors.md" in out, "the command points at the fuller table"
+
+status, out, err = run_cli(["send"])  # no text, no attachment, no state needed
+assert err.startswith("error [bad_usage]:"), f"a failure names its code first: {err!r}"
+with tempfile.TemporaryDirectory() as home:
+    for argv, code in [(["transcribe", "x.ogg"], "not_implemented"),
+                       (["send", "hi", "--to", "u"], "no_token"),
+                       (["send", "--to", "u", "--file", "/nope/missing.png"], "no_token")]:
+        status, out, err = run_cli(argv, env={"HOME": home})
+        assert f"error [{code}]:" in err, (argv, err)
+assert "errors.md" in (ROOT / "README.md").read_text(encoding="utf-8"), "the README points at the table"
+print(f"{len(doc_rows)} codes documented, exit statuses and retry verdicts agreeing across CODES, docs/errors.md and the errors command")
+
 # --------------------------------------------------------------------------- module entry point
 section("module entry point")
 proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "--version"], capture_output=True, text=True, cwd=ROOT,

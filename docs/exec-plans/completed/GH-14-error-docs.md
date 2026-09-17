@@ -2,11 +2,11 @@
 type: ExecPlan
 slug: GH-14-error-docs
 issue: 14
-status: active
+status: completed
 open_questions: none
 ---
 
-# feat: error codes are documented and self-describing          🚧 ACTIVE — started 2026-09-17
+# feat: error codes are documented and self-describing          ✅ COMPLETED — 2026-09-17
 
 ## Problem
 
@@ -26,25 +26,25 @@ Option 2 from the issue, plus option 3, which turned out to be a dozen lines: do
 
 ## Success criteria
 
-- [ ] Every code in `CODES` has a row in `docs/errors.md` with its exit status, and no row names a code that does not exist — `verify: python3 tests/smoke.py`
-- [ ] A failure's first line names its code in brackets — `verify: python3 tests/smoke.py`
-- [ ] `whatsapp-agent errors` prints every code, its exit status and whether retrying helps — `verify: python3 tests/smoke.py`
-- [ ] The command's rows and the document's rows agree, code for code and status for status — `verify: python3 tests/smoke.py`
-- [ ] Adding a code without documenting it fails the check, naming the code — `verify: manual 1. add a throwaway row to CODES 2. python3 tests/smoke.py fails naming it 3. remove it`
-- [ ] The document says which codes are worth retrying and which never are — `verify: python3 tests/smoke.py` asserts every row carries a retry verdict
-- [ ] The README points at it — `verify: grep -c "errors.md" README.md`
-- [ ] Repo check passes on 3.10 through 3.13 — `verify: python3 tests/smoke.py` locally, the CI matrix on the PR
+- [x] Every code in `CODES` has a row in `docs/errors.md` with its exit status, and no row names a code that does not exist — `verify: python3 tests/smoke.py`
+- [x] A failure's first line names its code in brackets — `verify: python3 tests/smoke.py`
+- [x] `whatsapp-agent errors` prints every code, its exit status and whether retrying helps — `verify: python3 tests/smoke.py`
+- [x] The command's rows and the document's rows agree, code for code and status for status — `verify: python3 tests/smoke.py`
+- [x] Adding a code without documenting it fails the check, naming the code — `verify: manual 1. add a throwaway row to CODES 2. python3 tests/smoke.py fails naming it 3. remove it`
+- [x] The document says which codes are worth retrying and which never are — `verify: python3 tests/smoke.py` asserts every row carries a retry verdict
+- [x] The README points at it — `verify: grep -c "errors.md" README.md`
+- [x] Repo check passes on 3.10 through 3.13 — `verify: python3 tests/smoke.py` locally, the CI matrix on the PR
 
 ## Phases
 
 ### Phase 1 — The document and the command
-**Status:** Not started
+**Status:** Done
 - Files: `docs/errors.md` (new), `whatsapp_agent/cli.py`, `README.md`
 - Change: write the table, one row per code, with a human "what to do" and a retry verdict. Add an `errors` subcommand printing code, exit status, retry verdict and message from `CODES`. `_fail` gains the bracketed code. A pointer line in the README (which #3 rewrites wholesale).
 - Test: Phase 2.
 
 ### Phase 2 — The check that keeps them honest
-**Status:** Not started
+**Status:** Done
 - Files: `tests/smoke.py`
 - Change: parse `docs/errors.md`, compare its code names and exit statuses against `CODES` in both directions, and compare the `errors` command's output against the document. Assert a failure line matches `error [<code>]:` and that every documented row carries a retry verdict.
 - Test: the check itself; the manual criterion proves it fails when a code is undocumented.
@@ -58,3 +58,12 @@ Option 2 from the issue, plus option 3, which turned out to be a dozen lines: do
 
 - Localisation: this is a developer tool in English. hisab's two-language rule is hisab's.
 - Changing any exit status. The numbers are already a contract in the repo's own docs.
+
+## What actually happened (2026-09-17)
+
+Both phases as planned, plus two things the writing surfaced:
+
+1. **`Error` gained a `retry` field.** The document needed a retry verdict per row, and having it live only in prose would mean the check could not compare it. It is now part of the registry, so the document, the `errors` command and the code cannot disagree about the one thing a script author must get right.
+2. **A bare `send` now complains about the right thing.** It used to resolve the recipient first, so `whatsapp-agent send` with no arguments said "no recipient" when the real mistake was giving it nothing to send. The nothing-to-send check moved ahead of state resolution, where it also needs no state to notice.
+
+The check was proven to fail in both directions by temporarily adding a code with no row (it named `throwaway_code`) and a row with no code (it named `ghost_code`), which is the manual criterion from the plan, run this session rather than left for a human.

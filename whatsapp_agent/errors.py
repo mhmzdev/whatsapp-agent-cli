@@ -22,27 +22,30 @@ Exit statuses, stable from here on — a script may switch on them:
 
 The 6 / 7 split is the one a caller acts on: 7 is worth looping on, 6 never is.
 
-Adding a failure is one CODES row. tests/smoke.py fails when a code has no
+Every code is also a row in docs/errors.md, which says what to do about it.
+Adding a failure is one CODES row plus one documented row. tests/smoke.py fails when a code has no
 message, when two codes share an exit status, or when a message leaks a
 traceback, an HTTP body or a provider name.
 """
 
 from collections import namedtuple
 
-Error = namedtuple("Error", "exit_status message")
+# retry: True when waiting and trying again can succeed, False when it never can.
+# It is the one thing a script author has to get right.
+Error = namedtuple("Error", "exit_status message retry")
 
 CODES = {
-    "bad_usage": Error(2, "bad usage"),
-    "no_token": Error(3, "no token: set WHATSAPP_AGENT_TOKEN, or pass --token-file PATH"),
-    "auth": Error(4, "the platform rejected this token; it will not become valid on retry"),
-    "not_implemented": Error(5, "this command has not landed yet"),
-    "platform_rejected": Error(6, "the platform refused this request; retrying will not help"),
-    "platform_unavailable": Error(7, "the platform is unreachable right now; retrying may help"),
-    "no_recipient": Error(8, "no recipient: pass --to, or run recv once so the creator is recorded"),
-    "another_poller": Error(9, "another process is polling this token; only one poller is allowed at a time"),
-    "media_too_large": Error(10, "this file is larger than the platform allows for its type"),
-    "media_url_expired": Error(11, "this download link has expired; ask for the media id again"),
-    "internal": Error(70, "something went wrong on this side"),
+    "bad_usage": Error(2, "bad usage", False),
+    "no_token": Error(3, "no token: set WHATSAPP_AGENT_TOKEN, or pass --token-file PATH", False),
+    "auth": Error(4, "the platform rejected this token; it will not become valid on retry", False),
+    "not_implemented": Error(5, "this command has not landed yet", False),
+    "platform_rejected": Error(6, "the platform refused this request; retrying will not help", False),
+    "platform_unavailable": Error(7, "the platform is unreachable right now; retrying may help", True),
+    "no_recipient": Error(8, "no recipient: pass --to, or run recv once so the creator is recorded", False),
+    "another_poller": Error(9, "another process is polling this token; only one poller is allowed at a time", False),
+    "media_too_large": Error(10, "this file is larger than the platform allows for its type", False),
+    "media_url_expired": Error(11, "this download link has expired; ask for the media id again", False),
+    "internal": Error(70, "something went wrong on this side", False),
 }
 
 

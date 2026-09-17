@@ -14,6 +14,16 @@ What it will hold, in the order it exists today:
 - replies split under WhatsApp's 4,096-character cap, markdown converted to WhatsApp formatting
 - a per-call deny list built from the folder listing, so a new folder is denied by default
 
+## When something fails
+
+Every failure names its code and exits with a number a script can branch on:
+
+```
+error [platform_rejected]: the platform refused this request; retrying will not help
+```
+
+`whatsapp-agent errors` lists them all; [`docs/errors.md`](docs/errors.md) says what to do about each.
+
 ## License
 
 MIT.
