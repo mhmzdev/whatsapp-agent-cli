@@ -13,6 +13,7 @@ Up: [docs/INDEX.md](../INDEX.md). Written by `/create-plan` into `backlog/`; `/i
 ## Backlog
 | Plan | Problem it solves | Depends on |
 |---|---|---|
+| [GH-2-package-skeleton](backlog/GH-2-package-skeleton.md) | No package exists: makes `pip install -e .` produce a working `whatsapp-agent` that resolves its token and state dir, and creates the repo check every later ticket extends | nothing — everything in epic #1 depends on it |
 
 ## Active
 | Plan | Started | Issue |
