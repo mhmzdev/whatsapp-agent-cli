@@ -8,11 +8,16 @@ WHATSAPP_AGENT_DEBUG is set and never otherwise.
 
 Exit statuses, stable from here on — a script may switch on them:
 
-    2   bad_usage         wrong arguments (argparse exits 2 for the same reason)
-    3   no_token          no token in the environment and none in --token-file
-    4   auth              the platform rejected the token itself; retrying never helps
-    5   not_implemented   a subcommand that exists but has not landed yet
-    70  internal          anything unclassified (EX_SOFTWARE)
+    2   bad_usage             wrong arguments (argparse exits 2 for the same reason)
+    3   no_token              no token in the environment and none in --token-file
+    4   auth                  the platform rejected the token itself; retrying never helps
+    5   not_implemented       a subcommand that exists but has not landed yet
+    6   platform_rejected     the platform refused this request; a retry will be refused too
+    7   platform_unavailable  the platform or the network was unreachable; a retry may work
+    8   no_recipient          no --to given and no creator recorded yet
+    70  internal              anything unclassified (EX_SOFTWARE)
+
+The 6 / 7 split is the one a caller acts on: 7 is worth looping on, 6 never is.
 
 Adding a failure is one CODES row. tests/smoke.py fails when a code has no
 message, when two codes share an exit status, or when a message leaks a
@@ -28,6 +33,9 @@ CODES = {
     "no_token": Error(3, "no token: set WHATSAPP_AGENT_TOKEN, or pass --token-file PATH"),
     "auth": Error(4, "the platform rejected this token; it will not become valid on retry"),
     "not_implemented": Error(5, "this command has not landed yet"),
+    "platform_rejected": Error(6, "the platform refused this request; retrying will not help"),
+    "platform_unavailable": Error(7, "the platform is unreachable right now; retrying may help"),
+    "no_recipient": Error(8, "no recipient: pass --to, or run recv once so the creator is recorded"),
     "internal": Error(70, "something went wrong on this side"),
 }
 
