@@ -18,6 +18,7 @@ from pathlib import Path
 KEEP_DAYS = 30
 MESSAGES = "messages.jsonl"
 CREATOR = "creator"
+OFFSET = "offset"
 
 
 class Store:
@@ -79,6 +80,26 @@ class Store:
         tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kept), encoding="utf-8")
         os.replace(tmp, self.path)
         return len(records) - len(kept)
+
+    # ---------------------------------------------------------------- cursor
+    def offset(self):
+        """The platform's bookmark: where the last completed batch ended. None on a
+        first run, which asks for new traffic only."""
+        path = self.dir / OFFSET
+        if not path.exists():
+            return None
+        return path.read_text(encoding="utf-8").strip() or None
+
+    def set_offset(self, value):
+        """Written only after a batch has been fully delivered and recorded. Writing
+        it earlier is how a crash mid-batch skips messages for good."""
+        if not value:
+            return None
+        self.dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.dir / f"{OFFSET}.tmp"
+        tmp.write_text(str(value).strip(), encoding="utf-8")
+        os.replace(tmp, self.dir / OFFSET)
+        return value
 
     # ---------------------------------------------------------------- creator
     def creator(self):
