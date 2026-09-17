@@ -8,7 +8,7 @@ argument-hint: "[title hint | issue number]"
 
 Honour `.agents/skills/README.md`. Last step: `… → /review → **/open-pr**`. Only on request; it is outward-facing. **Never push, commit or `gh pr create` without the user's confirmation (Phase 5).** PRs always target `main`, never another feature branch.
 
-Facts from `AGENTS.md`: `trunk` = `main`, `issues_repo` = `mhmzdev/whatsapp-agent-relay`, labels = only what `gh label list` returns (none is fine), attribution = **keep** (copy the form from `git log -3`).
+Facts from `AGENTS.md`: `trunk` = `main`, `issues_repo` = `mhmzdev/whatsapp-agent-cli`, labels = only what `gh label list` returns (none is fine), attribution = **keep** (copy the form from `git log -3`).
 
 ## Phase 1 — State
 In parallel: `git status --short`, `git branch --show-current`, `git fetch origin --quiet`, `git log --oneline origin/main..HEAD`, `gh pr view <branch> --json number,state,url`, `gh auth status`.
@@ -62,7 +62,7 @@ Push and open/update the PR?
 Any redirect → apply and re-present. Never proceed on silence.
 
 ## Phase 6 — Execute and verify
-`git push -u origin <branch>`; `gh pr create --repo mhmzdev/whatsapp-agent-relay --base main --head <branch> --title … --body-file …` (or `gh pr edit`). Then `gh pr view --json number,title,url,baseRefName,body`: every required heading present and base is `main`, else fix. Report: URL, title, base, created vs updated, Deploy prerequisites verbatim, the unchecked Test Plan items.
+`git push -u origin <branch>`; `gh pr create --repo mhmzdev/whatsapp-agent-cli --base main --head <branch> --title … --body-file …` (or `gh pr edit`). Then `gh pr view --json number,title,url,baseRefName,body`: every required heading present and base is `main`, else fix. Report: URL, title, base, created vs updated, Deploy prerequisites verbatim, the unchecked Test Plan items.
 
 ## What NOT to do
 - Force push, push to `main`, base on a feature branch, `reset --hard`, stash without `-u`, auto-resolve a conflict, `git add -A`. Open without confirmation. Duplicate a PR. Fabricate or omit `Closes #N`. Tick a Test Plan box. Move the board card.

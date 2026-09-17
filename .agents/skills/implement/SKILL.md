@@ -15,7 +15,7 @@ Honour `.agents/skills/README.md`. You execute an **approved plan**. It was scop
 4. Parse title, issue, phases, criteria. **Resume:** phases already `Done` in `active/` → continue at the first unfinished one.
 5. Move `backlog/ → active/` with `git mv`, banner `⬜ BACKLOG` → `🚧 ACTIVE — started YYYY-MM-DD`, `status: active`, update the INDEX row. A second plan already active → say so and confirm.
 6. Branch: `GH-<N>-<topic>` (or `<topic>`), from `main`, only if not already on it.
-7. **Claim** (only when the plan names an issue): `gh issue edit <N> --repo mhmzdev/whatsapp-agent-relay --add-assignee @me`; set the board card to `In progress` (ids from `gh project field-list`). Another assignee already on it → stop and report.
+7. **Claim** (only when the plan names an issue): `gh issue edit <N> --repo mhmzdev/whatsapp-agent-cli --add-assignee @me`; set the board card to `In progress` (ids from `gh project field-list`). Another assignee already on it → stop and report.
 8. Summarise scope; confirm before writing code.
 
 ## Phase 1 — Setup

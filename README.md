@@ -1,4 +1,4 @@
-# whatsapp-agent-relay
+# whatsapp-agent-cli
 
 A relay that puts a coding agent in your pocket: a WhatsApp agent (WhatsApp Agent Platform, long-poll, single creator) on one side, a CLI agent such as Claude Code or Codex over a folder on the other. Read-only by default; write paths are declared per folder.
 

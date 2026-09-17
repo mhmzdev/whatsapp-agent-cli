@@ -1,4 +1,4 @@
-# whatsapp-agent-relay — agent guide
+# whatsapp-agent-cli — agent guide
 
 A relay that puts a coding agent in your pocket: a WhatsApp agent (Agent Platform, long-poll, single creator) on one side, a CLI agent such as Claude Code or Codex, run non-interactively over one folder, on the other. The CLI agent is the brain; the relay is transport plus session control. Read-only by default; write paths are declared per folder. This file is the canonical instructions for any coding agent (Claude Code reads it through `CLAUDE.md`; Codex and others read it directly). It is a router and a fact sheet: the README defines the product, the skills explain the process, the rules hold the conventions.
 
@@ -58,12 +58,12 @@ Artifacts: `docs/brainstorm/` · `docs/specs/` · `docs/exec-plans/{backlog,acti
 ## Repo facts (read by the skills)
 
 ```yaml
-repo: mhmzdev/whatsapp-agent-relay
+repo: mhmzdev/whatsapp-agent-cli
 trunk: main                      # PRs target this; never push to it directly
-issues_repo: mhmzdev/whatsapp-agent-relay
+issues_repo: mhmzdev/whatsapp-agent-cli
 project_board: undecided         # reuse "Hisab Engineering" (mhmzdev/projects/1) or a new board — /file-an-issue asks first
 check: none yet                  # set by the first plan
-labels: read with `gh label list --repo mhmzdev/whatsapp-agent-relay`; apply only what exists, none is fine
+labels: read with `gh label list --repo mhmzdev/whatsapp-agent-cli`; apply only what exists, none is fine
 branch: "GH-<N>-<kebab-topic>"   # or <kebab-topic> without an issue
 pr:
   base: main

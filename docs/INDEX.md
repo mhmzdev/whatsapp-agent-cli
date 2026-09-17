@@ -27,4 +27,4 @@ Format: every document here is markdown with a small YAML frontmatter (`type` re
 | [`.agents/rules/`](../.agents/rules/) | you are writing anything; today: [`privacy.md`](../.agents/rules/privacy.md) |
 | [`.agents/skills/README.md`](../.agents/skills/README.md) | you are running a lifecycle skill or moving a board card |
 
-Tickets are **GitHub issues** on [mhmzdev/whatsapp-agent-relay](https://github.com/mhmzdev/whatsapp-agent-relay/issues). There is no local ticket file, by design.
+Tickets are **GitHub issues** on [mhmzdev/whatsapp-agent-cli](https://github.com/mhmzdev/whatsapp-agent-cli/issues). There is no local ticket file, by design.

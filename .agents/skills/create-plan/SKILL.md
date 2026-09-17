@@ -15,7 +15,7 @@ Repo facts from `AGENTS.md`: `check`, `docs/exec-plans/{backlog,active,completed
 
 ## Step 1 — Context
 1. Read every mentioned file **fully**. Derive the slug and read any `docs/brainstorm/` or `docs/specs/` file for it first.
-2. Issue given: `gh issue view <N> --repo mhmzdev/whatsapp-agent-relay --json title,body,url,labels,state,assignees`. It **is** the ticket: settled decisions from its body, its `Done when` boxes seed the criteria. Check blockers (`blockedBy` via `gh api graphql`); an open blocker → say so and stop unless told to plan ahead.
+2. Issue given: `gh issue view <N> --repo mhmzdev/whatsapp-agent-cli --json title,body,url,labels,state,assignees`. It **is** the ticket: settled decisions from its body, its `Done when` boxes seed the criteria. Check blockers (`blockedBy` via `gh api graphql`); an open blocker → say so and stop unless told to plan ahead.
 3. If the WHAT is still fuzzy or touches a risk area never grilled (the write boundary, session control, the offset and store, what reaches the phone on failure, anything privacy-adjacent), **recommend `/grill-me` first**.
 
 ## Step 2 — Targeted research

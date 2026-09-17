@@ -1,6 +1,6 @@
 ---
 name: file-an-issue
-description: File work as real GitHub issues on mhmzdev/whatsapp-agent-relay and its project board. Two modes — slice an approved spec into a parent issue plus tracer-bullet child sub-issues with native sub-issue and blocking edges, or file one standalone issue for a bug, chore or follow-up. Use when the user says "file an issue", "open an issue", "break this into tickets", "make tickets", "slice this up". Issues live on GitHub, never as local files.
+description: File work as real GitHub issues on mhmzdev/whatsapp-agent-cli and its project board. Two modes — slice an approved spec into a parent issue plus tracer-bullet child sub-issues with native sub-issue and blocking edges, or file one standalone issue for a bug, chore or follow-up. Use when the user says "file an issue", "open an issue", "break this into tickets", "make tickets", "slice this up". Issues live on GitHub, never as local files.
 argument-hint: "[path to spec | description of the one issue to file]"
 ---
 
@@ -9,7 +9,7 @@ argument-hint: "[path to spec | description of the one issue to file]"
 Honour `.agents/skills/README.md`. You file work as real **GitHub issues**. Nothing you produce is a local markdown file.
 
 ## Step 0 — Repo facts
-From `AGENTS.md` → Repo facts: `issues_repo` (`mhmzdev/whatsapp-agent-relay`), `project_board`, `check`, labels (apply only what `gh label list --repo mhmzdev/whatsapp-agent-relay` returns; never create one). **If `project_board` is `undecided`:** ask once — reuse "Hisab Engineering" (`mhmzdev/projects/1`, with a way to tell relay cards apart) or create a new board — then write the answer into `AGENTS.md` before filing. Board prerequisite: `gh auth status` shows the `project` scope, else `gh auth refresh -s project` once.
+From `AGENTS.md` → Repo facts: `issues_repo` (`mhmzdev/whatsapp-agent-cli`), `project_board`, `check`, labels (apply only what `gh label list --repo mhmzdev/whatsapp-agent-cli` returns; never create one). **If `project_board` is `undecided`:** ask once — reuse "Hisab Engineering" (`mhmzdev/projects/1`, with a way to tell relay cards apart) or create a new board — then write the answer into `AGENTS.md` before filing. Board prerequisite: `gh auth status` shows the `project` scope, else `gh auth refresh -s project` once.
 
 ## The title carries the topic
 Every title becomes the downstream slug: `GH-<N>-<kebab-topic>`. `Quoted reply resolves after a reset` → `GH-4-quoted-reply-after-reset`. Avoid titles that are only a verb or only a component.
@@ -38,7 +38,7 @@ Each ticket is a **tracer bullet**: cuts through every layer it needs (poll → 
 **A4 — Approval gate.** Numbered list: **Title**, **Blocked by**, **Priority** (from the board's field), **What it delivers**. Ask: granularity right, edges real, merge or split? **Create nothing on GitHub until approved.**
 
 **A5 — Create.** Run the privacy rule over every title and body first.
-- **Parent**: title = spec title; body = Problem + Solution + Out of scope condensed, a `## Children` checklist (filled after), `Spec: docs/specs/<file>` (temporary). `gh issue create --repo mhmzdev/whatsapp-agent-relay --title … --body-file <tmp> [--label …]`. Parse the number.
+- **Parent**: title = spec title; body = Problem + Solution + Out of scope condensed, a `## Children` checklist (filled after), `Spec: docs/specs/<file>` (temporary). `gh issue create --repo mhmzdev/whatsapp-agent-cli --title … --body-file <tmp> [--label …]`. Parse the number.
 - **Children**, in dependency order, body:
 
 ```markdown
@@ -65,7 +65,7 @@ Each ticket is a **tracer bullet**: cuts through every layer it needs (poll → 
 # Mode B — Standalone
 
 1. Raise the spec question once (above).
-2. **Ground it.** A reproduction, `file:line` for the mechanism read this run, `gh issue list --repo mhmzdev/whatsapp-agent-relay --state all --search "<keywords>"` for a sibling.
+2. **Ground it.** A reproduction, `file:line` for the mechanism read this run, `gh issue list --repo mhmzdev/whatsapp-agent-cli --state all --search "<keywords>"` for a sibling.
 3. Body: `## What's wrong` (or `What's missing`) with the evidence · `## Why it matters` · `## Options` only for a real fork · `## Done when` with the same verify rule.
 4. `gh issue create` → board item-add with Status `Todo` and a Priority. If an open parent covers the area, offer `addSubIssue` under it.
 5. Report the URL, board status, parent (if any); offer `/create-plan` and wait.
