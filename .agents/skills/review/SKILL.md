@@ -9,7 +9,7 @@ argument-hint: optional plan path, issue number, or diff scope — defaults to t
 Honour `.agents/skills/README.md`. Position: `/implement` → **`/review`** → `/open-pr`. Two jobs: **is it done** (every criterion verified, honestly) and **is it right** (the relay's conventions). Advisory: report first, fix only when asked.
 
 ## Step 1 — Scope and intent
-- Paths given → those. Else `git merge-base HEAD main` → `git diff <base>...HEAD --name-only`. Announce the file count and areas.
+- Paths given → those. Else `git merge-base HEAD develop` → `git diff <base>...HEAD --name-only`. Announce the file count and areas.
 - Find the intent: the plan for this slug in `docs/exec-plans/{active,completed}/`, its issue (`gh issue view`), the spec. The plan's criteria and the issue's `Done when` boxes seed the checklist; add what the diff shows the intent implies.
 
 ## Step 2 — Verify each criterion at the cheapest honest layer

@@ -6,15 +6,15 @@ argument-hint: "[title hint | issue number]"
 
 # Open PR
 
-Honour `.agents/skills/README.md`. Last step: `… → /review → **/open-pr**`. Only on request; it is outward-facing. **Never push, commit or `gh pr create` without the user's confirmation (Phase 5).** PRs always target `main`, never another feature branch.
+Honour `.agents/skills/README.md`. Last step: `… → /review → **/open-pr**`. Only on request; it is outward-facing. **Never push, commit or `gh pr create` without the user's confirmation (Phase 5).** Feature PRs always target `develop`, never another feature branch. The only PR that targets `main` is the promote (`develop → main`), which is a release: it needs a version bump on `develop` first (`scripts/bump_version.py`), or the `no-release` label when it is docs-only. See `.agents/rules/releases.md`.
 
-Facts from `AGENTS.md`: `trunk` = `main`, `issues_repo` = `mhmzdev/whatsapp-agent-cli`, labels = only what `gh label list` returns (none is fine), attribution = **keep** (copy the form from `git log -3`).
+Facts from `AGENTS.md`: `trunk` = `develop`, `release_branch` = `main`, `issues_repo` = `mhmzdev/whatsapp-agent-cli`, labels = only what `gh label list` returns (none is fine), attribution = **keep** (copy the form from `git log -3`).
 
 ## Phase 1 — State
 In parallel: `git status --short`, `git branch --show-current`, `git fetch origin --quiet`, `git log --oneline origin/main..HEAD`, `gh pr view <branch> --json number,state,url`, `gh auth status`.
 - Feature branch, commits ahead, clean → **Flow A**.
 - Feature branch, dirty → ask: include these files or not? Stage only named files.
-- On `main` with commits ahead or a dirty tree → **Flow B** (rescue): branch off HEAD first (`git checkout -b GH-<N>-<topic>` or `<topic>`), then `git branch -f main origin/main`. Dirty tree: `git stash push -u`, checkout main, `pull --ff-only`, branch, `stash pop`. Never `reset --hard`; stop on conflict.
+- On `develop` or `main` with commits ahead or a dirty tree → **Flow B** (rescue): branch off HEAD first (`git checkout -b GH-<N>-<topic>` or `<topic>`), then `git branch -f <that branch> origin/<that branch>`. Dirty tree: `git stash push -u`, checkout the branch, `pull --ff-only`, branch, `stash pop`. Never `reset --hard`; stop on conflict.
 - Existing open PR → **update** it (`gh pr edit`), never a duplicate.
 
 ## Phase 2 — Linked issue
@@ -52,7 +52,7 @@ Only labels that exist and fit; none is the normal case.
 
 ## Phase 5 — Confirm and wait
 ```
-Branch: <branch> → main    (new PR | updating #N)
+Branch: <branch> → develop    (new PR | updating #N)
 Title:  <title>      Labels: <list|none>
 Commits: <n> — one line each
 Flow B plan, if any
@@ -62,7 +62,7 @@ Push and open/update the PR?
 Any redirect → apply and re-present. Never proceed on silence.
 
 ## Phase 6 — Execute and verify
-`git push -u origin <branch>`; `gh pr create --repo mhmzdev/whatsapp-agent-cli --base main --head <branch> --title … --body-file …` (or `gh pr edit`). Then `gh pr view --json number,title,url,baseRefName,body`: every required heading present and base is `main`, else fix. Report: URL, title, base, created vs updated, Deploy prerequisites verbatim, the unchecked Test Plan items.
+`git push -u origin <branch>`; `gh pr create --repo mhmzdev/whatsapp-agent-cli --base develop --head <branch> --title … --body-file …` (or `gh pr edit`). Then `gh pr view --json number,title,url,baseRefName,body`: every required heading present and the base is the intended one, else fix. Report: URL, title, base, created vs updated, Deploy prerequisites verbatim, the unchecked Test Plan items.
 
 ## What NOT to do
-- Force push, push to `main`, base on a feature branch, `reset --hard`, stash without `-u`, auto-resolve a conflict, `git add -A`. Open without confirmation. Duplicate a PR. Fabricate or omit `Closes #N`. Tick a Test Plan box. Move the board card.
+- Force push, push to `develop` or `main`, base a feature PR on anything but `develop`, base on a feature branch, `reset --hard`, stash without `-u`, auto-resolve a conflict, `git add -A`. Open without confirmation. Duplicate a PR. Fabricate or omit `Closes #N`. Tick a Test Plan box. Move the board card.

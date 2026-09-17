@@ -9,6 +9,7 @@ A relay that puts a coding agent in your pocket: a WhatsApp agent (Agent Platfor
 3. [`docs/INDEX.md`](docs/INDEX.md) — the progressive-disclosure root for every artifact; each directory has its own `INDEX.md`.
 4. [`.agents/rules/`](.agents/rules/) — conventions, one file per topic, each with a `paths:` frontmatter naming its area. Claude Code loads them through the `.claude/rules` symlink.
    - [`privacy.md`](.agents/rules/privacy.md) — nothing from the author's own setup enters this repo
+   - [`releases.md`](.agents/rules/releases.md) — `develop` is the trunk, landing on `main` publishes to PyPI
 5. The code, once there is some. Until the first spec is ticketed there is none; the language is an open question in the first brainstorm.
 
 Docs follow the Open Knowledge Format: markdown, a small YAML frontmatter with `type`, an `INDEX.md` per directory, plain links as the graph.
@@ -17,6 +18,8 @@ Docs follow the Open Knowledge Format: markdown, a small YAML frontmatter with `
 
 ```
 README.md        the product definition — what the relay holds, in the order it exists today
+.github/workflows/  tests.yml (the check on every PR) and release.yml (main -> PyPI, tag, GitHub Release)
+scripts/         bump_version.py — the only way the version moves
 AGENTS.md        this file; CLAUDE.md imports it
 .agents/skills/  the lifecycle skills (.claude/skills is a symlink)
 .agents/rules/   conventions (.claude/rules is a symlink)
@@ -43,6 +46,8 @@ The relay is where [`hisab-whatsapp`](https://github.com/mhmzdev/hisab-whatsapp)
 | What | Command |
 |---|---|
 | The check (run before calling anything done) | `python3 tests/smoke.py` — created by [#2](https://github.com/mhmzdev/whatsapp-agent-cli/issues/2); does not exist yet |
+| Bump the version before a promote | `python3 scripts/bump_version.py patch\|minor\|major` |
+| Release | merge a promote PR `develop → main`; `release.yml` publishes to PyPI, tags `v<version>` and cuts the GitHub Release |
 
 ## How we work — the lifecycle
 
@@ -59,7 +64,9 @@ Artifacts: `docs/brainstorm/` · `docs/specs/` · `docs/exec-plans/{backlog,acti
 
 ```yaml
 repo: mhmzdev/whatsapp-agent-cli
-trunk: main                      # PRs target this; never push to it directly
+trunk: develop                   # PRs target this; never push to it directly
+release_branch: main             # develop -> main is the release; release.yml publishes to PyPI
+dist_name: whatsapp-agent        # PyPI distribution (whatsapp-agent-cli was taken); command whatsapp-agent
 issues_repo: mhmzdev/whatsapp-agent-cli
 project_board: 2                 # owner mhmzdev — "WA-CLI"
 board_fields:
@@ -70,7 +77,7 @@ check: "python3 tests/smoke.py"  # created by #2; does not exist yet
 labels: read with `gh label list --repo mhmzdev/whatsapp-agent-cli`; apply only what exists, none is fine
 branch: "GH-<N>-<kebab-topic>"   # or <kebab-topic> without an issue
 pr:
-  base: main
+  base: develop
   body: fixed sections — Why · Change Summary · Major Impact · Linked Issue · Test Plan · Deploy prerequisites (when needed)
   attribution: keep              # commits and PR bodies carry the Claude trailer and session link, as in git log
 docs:
