@@ -21,6 +21,7 @@ from .text import DEFAULT_CHUNK, chunks, numbered, to_whatsapp
 
 BASE = "https://api.whatsapp.com/agent/v1"
 RETRYABLE_STATUS = (408, 425, 429, 500, 502, 503, 504)
+MAX_POLL_TIMEOUT = 25   # the platform's own ceiling on the long-poll
 
 # One part of a sent message: the id the platform gave it, and the text it carries.
 # Returning both means a caller never has to re-run the split to know what was sent.
@@ -100,11 +101,60 @@ class WhatsApp:
         detail = f"{where}{f' error.code {code}' if code else ''} {_body_excerpt(response)}".strip()
         if status == 401 or (status == 400 and code == 100):
             raise AuthError(detail)
+        if status == 409:
+            # A newer poll replaced ours. One poller per token is a platform rule,
+            # and two of them steal messages from each other silently.
+            raise WhatsAppError("another_poller", detail)
         if status in RETRYABLE_STATUS:
             raise WhatsAppError("platform_unavailable", detail)
         if 400 <= status < 500:
             raise WhatsAppError("platform_rejected", detail)
         raise WhatsAppError("platform_unavailable", detail)
+
+    def poll(self, offset=None, limit=50, timeout=20, replay=False):
+        """One long-poll. Returns `(messages, next_offset)`.
+
+        No offset and `replay=False` asks for new traffic only — the platform sends
+        nothing older, which is what a first run wants. `replay=True` sends
+        `offset=0`, which replays what the platform still holds (30 days).
+        A 204 means the poll timed out with nothing to deliver: an empty batch, and
+        the caller keeps the offset it had.
+        """
+        params = {"limit": int(limit), "timeout": min(int(timeout), MAX_POLL_TIMEOUT)}
+        if offset:
+            params["offset"] = offset
+        elif replay:
+            params["offset"] = 0
+        response = self._request("updates", "GET", "/updates", params=params,
+                                 timeout=min(int(timeout), MAX_POLL_TIMEOUT) + 10)
+        if response.status_code == 204:
+            return [], offset
+        try:
+            body = response.json() or {}
+        except Exception:  # noqa: BLE001 — a 2xx with an unreadable body is an empty batch
+            return [], offset
+        messages = []
+        for entry in body.get("entry") or []:
+            for change in entry.get("changes") or []:
+                messages.extend((change.get("value") or {}).get("messages") or [])
+        return messages, body.get("next_offset") or offset
+
+    def typing(self, message_id):
+        """Mark a message read and show the typing indicator.
+
+        Never raises: a receipt that fails is cosmetic, and losing the message it
+        refers to because of it would not be. Returns True when the platform took it.
+        """
+        try:
+            self._request("statuses", "POST", "/statuses", json={
+                "messaging_product": "whatsapp",
+                "status": "read",
+                "message_id": message_id,
+                "typing_indicator": {"type": "text"},
+            }, timeout=10)
+            return True
+        except WhatsAppError:
+            return False
 
     def parts_for(self, text):
         """What `send` would put on the wire: converted, split, numbered."""

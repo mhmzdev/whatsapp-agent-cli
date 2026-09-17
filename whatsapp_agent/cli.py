@@ -6,14 +6,15 @@ framework into every dependent's environment is a worse library, and this
 surface is small enough that the standard library covers it.
 
 The subcommands below parse their arguments and then fail with
-`not_implemented` until their own ticket lands — #5 recv, #6 media, #7
-transcribe. They exit non-zero on purpose: a stub that exits 0 would make an
+`not_implemented` until their own ticket lands — #6 media, #7 transcribe. They exit non-zero on purpose: a stub that exits 0 would make an
 unimplemented command look like a passing one.
 """
 
 import argparse
+import json
 import os
 import sys
+import time
 import traceback
 
 from . import __version__
@@ -52,6 +53,93 @@ def _send(args, env=None, session=None):
         print(sent.id)
 
 
+BACKOFF_START = 1
+BACKOFF_CAP = 60
+
+
+def _human(message):
+    """One line per message: when, who, what kind, and the text or a placeholder."""
+    kind = message.get("type", "?")
+    when = time.strftime("%H:%M:%S", time.localtime(int(message.get("timestamp", time.time()))))
+    who = message.get("from", "?")
+    if kind == "text":
+        what = (message.get("text") or {}).get("body", "")
+    else:
+        payload = message.get(kind) or {}
+        media_id = payload.get("id", "")
+        caption = payload.get("caption", "")
+        what = f"<{kind}{' ' + media_id if media_id else ''}>{' ' + caption if caption else ''}"
+    return f"{when}  {who}  {what}"
+
+
+def _text_of(message):
+    """What to record in the store: the body for text, a short placeholder otherwise.
+    The bytes behind a media id are #6's business, and transcription is #7's."""
+    if message.get("type") == "text":
+        return (message.get("text") or {}).get("body", "")
+    return _human(message).split("  ", 2)[-1]
+
+
+def _deliver(message, store, client, as_json, typing):
+    """Print, then record, then let the caller advance the cursor.
+
+    That order is deliberate: killed between printing and recording, the message
+    arrives again next run; the other order would mark it seen and let nobody ever
+    see it. A visible duplicate beats a silent loss.
+    """
+    line = json.dumps(message, ensure_ascii=False) if as_json else _human(message)
+    print(line, flush=True)
+    store.add(message.get("id"), "in", _text_of(message))
+    sender = message.get("from")
+    if sender:
+        store.set_creator(sender)
+    if typing and client is not None:
+        client.typing(message.get("id"))
+
+
+def _recv(args, env=None, session=None, sleep=time.sleep):
+    directory = state_dir(args.profile, args.state_dir, env=env)
+    store = Store(directory)
+    if args.transcribe:
+        raise WhatsAppError("not_implemented", "recv --transcribe lands in #7")
+    client = WhatsApp(resolve_token(args.token_file, env=env), session=session)
+
+    backoff = BACKOFF_START
+    replay = args.replay
+    while True:
+        try:
+            messages, next_offset = client.poll(store.offset(), limit=args.limit,
+                                                timeout=args.timeout, replay=replay)
+        except WhatsAppError as exc:
+            # auth and another_poller are permanent; only unavailability is worth waiting out,
+            # and only when the caller asked us to keep going.
+            if exc.code != "platform_unavailable" or not args.follow:
+                raise
+            # The code's message ends with advice ("retrying may help") that would read
+            # oddly next to the actual retry; the first clause is the fact.
+            print(f"warning: {exc.message.split(';')[0]} — retrying in {backoff}s",
+                  file=sys.stderr, flush=True)
+            sleep(backoff)
+            backoff = min(backoff * 2, BACKOFF_CAP)
+            continue
+
+        backoff = BACKOFF_START
+        replay = False  # only the first poll of a run may ask for the backlog
+        try:
+            for message in messages:
+                if store.seen(message.get("id")):
+                    continue
+                _deliver(message, store, client, args.json, args.typing)
+        except BrokenPipeError:
+            # `recv | head` closed the pipe. Stopping without advancing means the
+            # undelivered tail of this batch comes back on the next run.
+            return
+        store.set_offset(next_offset)
+
+        if not args.follow:
+            return
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="whatsapp-agent",
@@ -75,8 +163,11 @@ def build_parser():
     p_recv.add_argument("--follow", action="store_true", help="hold the long-poll open and stream")
     p_recv.add_argument("--json", action="store_true", help="one JSON object per line")
     p_recv.add_argument("--transcribe", action="store_true", help="replace a voice note with its transcript")
+    p_recv.add_argument("--typing", action="store_true", help="mark each delivered message read and show the typing indicator")
     p_recv.add_argument("--limit", type=int, default=50, metavar="N", help="messages per poll (default: %(default)s)")
-    p_recv.set_defaults(func=lambda args: _todo("recv", 5))
+    p_recv.add_argument("--timeout", type=int, default=20, metavar="S", help="seconds to hold one poll open, max 25 (default: %(default)s)")
+    p_recv.add_argument("--replay", action="store_true", help="on a first run, ask for the backlog the platform still holds (up to 30 days)")
+    p_recv.set_defaults(func=_recv)
 
     p_media = sub.add_parser("media", help="download or upload media")
     media_sub = p_media.add_subparsers(dest="media_command", metavar="<get|put>", required=True)
@@ -96,14 +187,17 @@ def build_parser():
     return parser
 
 
-def main(argv=None, env=None, session=None):
-    """`session` is for the check: any object with `.request` stands in for the network."""
+def main(argv=None, env=None, session=None, sleep=None):
+    """`session` and `sleep` are for the check: a fake session stands in for the
+    network, and a fake sleep proves backoff without waiting."""
     env = os.environ if env is None else env
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
         if args.func is _send:
             _send(args, env=env, session=session)
+        elif args.func is _recv:
+            _recv(args, env=env, session=session, **({"sleep": sleep} if sleep else {}))
         else:
             args.func(args)
     except WhatsAppError as exc:

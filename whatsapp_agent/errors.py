@@ -15,6 +15,7 @@ Exit statuses, stable from here on — a script may switch on them:
     6   platform_rejected     the platform refused this request; a retry will be refused too
     7   platform_unavailable  the platform or the network was unreachable; a retry may work
     8   no_recipient          no --to given and no creator recorded yet
+    9   another_poller        another process is polling this token; only one may
     70  internal              anything unclassified (EX_SOFTWARE)
 
 The 6 / 7 split is the one a caller acts on: 7 is worth looping on, 6 never is.
@@ -36,6 +37,7 @@ CODES = {
     "platform_rejected": Error(6, "the platform refused this request; retrying will not help"),
     "platform_unavailable": Error(7, "the platform is unreachable right now; retrying may help"),
     "no_recipient": Error(8, "no recipient: pass --to, or run recv once so the creator is recorded"),
+    "another_poller": Error(9, "another process is polling this token; only one poller is allowed at a time"),
     "internal": Error(70, "something went wrong on this side"),
 }
 

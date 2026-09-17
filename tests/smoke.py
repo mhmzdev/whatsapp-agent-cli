@@ -51,13 +51,15 @@ def project_fields_regex(text):
     return found
 
 
-def run_cli(argv, env=None, session=None):
-    """cli.main in-process, returning (exit status, stdout, stderr)."""
+def run_cli(argv, env=None, session=None, sleep=None):
+    """cli.main in-process, returning (exit status, stdout, stderr).
+
+    `sleep` stands in for time.sleep so backoff is provable without waiting."""
     out, err = io.StringIO(), io.StringIO()
     env = {} if env is None else env
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
-            status = cli.main(argv, env=env, session=session)
+            status = cli.main(argv, env=env, session=session, sleep=sleep)
         except SystemExit as exc:  # argparse exits on --help / bad usage
             status = exc.code if isinstance(exc.code, int) else 1
     return status, out.getvalue(), err.getvalue()
@@ -157,7 +159,7 @@ status, out, err = run_cli(["--help"])
 assert status == 0, status
 for name in ("send", "recv", "media", "transcribe"):
     assert name in out, f"--help does not list {name}"
-stubs = [(["recv"], 5), (["recv", "--follow", "--json"], 5), (["media", "get", "abc"], 6), (["media", "put", "f.png"], 6), (["transcribe", "note.ogg"], 7)]
+stubs = [(["media", "get", "abc"], 6), (["media", "put", "f.png"], 6), (["transcribe", "note.ogg"], 7)]
 for argv, issue in stubs:
     status, out, err = run_cli(argv)
     assert status == errors.CODES["not_implemented"].exit_status, (argv, status)
@@ -366,14 +368,181 @@ with tempfile.TemporaryDirectory() as home:
     assert "secret-token" not in err
 print("send posts, prints and records; --to falls back to the creator; --dry-run touches nothing; no token exits 3")
 
+# --------------------------------------------------------------------------- poll
+section("poll")
+
+
+def envelope(*messages, next_offset="off-2"):
+    return FakeResponse(200, {"entry": [{"changes": [{"value": {"messages": list(messages)}}]}],
+                              "next_offset": next_offset})
+
+
+def msg(msg_id, body="hi", sender="user:9", kind="text", **extra):
+    out = {"id": msg_id, "from": sender, "type": kind, "timestamp": 1700000000}
+    if kind == "text":
+        out["text"] = {"body": body}
+    else:
+        out[kind] = {"id": f"media-{msg_id}", **extra}
+    return out
+
+
+wa, session = make_client([envelope(msg("wamid.A"), msg("wamid.B"))])
+messages, next_offset = wa.poll()
+assert [m["id"] for m in messages] == ["wamid.A", "wamid.B"], messages
+assert next_offset == "off-2", next_offset
+params = session.calls[0]["params"]
+assert "offset" not in params, f"a first run asks for new traffic only: {params}"
+assert params["limit"] == 50 and params["timeout"] == 20, params
+
+wa, session = make_client([envelope()])
+wa.poll("off-1")
+assert session.calls[0]["params"]["offset"] == "off-1", "a resumed run passes its cursor back unchanged"
+
+wa, session = make_client([envelope()])
+wa.poll(None, replay=True)
+assert session.calls[0]["params"]["offset"] == 0, "--replay asks for the backlog"
+
+wa, session = make_client([envelope()])
+wa.poll(None, timeout=90)
+assert session.calls[0]["params"]["timeout"] == client.MAX_POLL_TIMEOUT, "the platform's own ceiling is respected"
+
+wa, _ = make_client([FakeResponse(204, None, "")])
+assert wa.poll("off-7") == ([], "off-7"), "a 204 is an empty batch that keeps the cursor"
+wa, _ = make_client([FakeResponse(200, {})])
+assert wa.poll("off-7") == ([], "off-7"), "no entry key is an empty batch"
+
+wa, _ = make_client([FakeResponse(409, {"error": {"code": 1752041}})])
+try:
+    wa.poll()
+    raise AssertionError("409 must raise")
+except errors.WhatsAppError as exc:
+    assert exc.code == "another_poller" and exc.exit_status == 9, exc.code
+
+wa, session = make_client([FakeResponse(200, {})])
+assert wa.typing("wamid.A") is True
+body = session.calls[0]["json"]
+assert body == {"messaging_product": "whatsapp", "status": "read", "message_id": "wamid.A",
+                "typing_indicator": {"type": "text"}}, body
+wa, _ = make_client([FakeResponse(500, None, "boom")])
+assert wa.typing("wamid.A") is False, "a failed receipt is cosmetic and never raises"
+print("first run omits the offset, a resume passes it back, --replay asks 0; 204 and empty envelopes are empty batches; 409 raises; typing never raises")
+
+# --------------------------------------------------------------------------- recv
+section("recv")
+with tempfile.TemporaryDirectory() as home:
+    env = {"HOME": home, state.TOKEN_ENV: "secret-token"}
+    sdir = str(Path(home) / "state")
+    base = ["--state-dir", sdir, "recv"]
+
+    session = FakeSession([envelope(msg("wamid.A", "first"), msg("wamid.B", "second"))])
+    status, out, err = run_cli(base + ["--json"], env=env, session=session)
+    assert status == 0, (status, err)
+    lines = [json.loads(line) for line in out.strip().splitlines()]
+    assert [m["id"] for m in lines] == ["wamid.A", "wamid.B"], lines
+    st = store.Store(sdir)
+    assert st.offset() == "off-2", "the cursor advances once the batch is delivered"
+    assert st.lookup("wamid.A") == "first" and st.seen("wamid.B")
+    assert st.creator() == "user:9", "the creator is recorded from an inbound message"
+
+    session = FakeSession([envelope(msg("wamid.A", "first"), msg("wamid.B", "second"), next_offset="off-3")])
+    status, out, err = run_cli(base + ["--json"], env=env, session=session)
+    assert status == 0 and out.strip() == "", f"a redelivered batch prints nothing: {out!r}"
+    assert store.Store(sdir).offset() == "off-3"
+
+    status, out, err = run_cli(base, env=env, session=FakeSession([envelope(msg("wamid.C", "human please"))]))
+    assert "human please" in out and "user:9" in out and "{" not in out, out
+
+    photo = msg("wamid.D", kind="image", caption="the whiteboard")
+    status, out, err = run_cli(base, env=env, session=FakeSession([envelope(photo)]))
+    assert "<image media-wamid.D>" in out and "the whiteboard" in out, out
+    assert store.Store(sdir).lookup("wamid.D").startswith("<image"), "media records a placeholder, not bytes"
+
+    # send now works without --to, because recv recorded the creator
+    status, out, err = run_cli(["--state-dir", sdir, "send", "got it"], env=env,
+                               session=FakeSession([FakeResponse(200, {"messages": [{"id": "wamid.reply"}]})]))
+    assert status == 0 and out.strip() == "wamid.reply", (status, out, err)
+
+    # --typing posts a receipt per delivered message; without it, nothing does
+    session = FakeSession([envelope(msg("wamid.E")), FakeResponse(200, {})])
+    run_cli(base + ["--typing"], env=env, session=session)
+    assert any(c["url"].endswith("/statuses") for c in session.calls), session.calls
+    session = FakeSession([envelope(msg("wamid.F"))])
+    run_cli(base, env=env, session=session)
+    assert not any(c["url"].endswith("/statuses") for c in session.calls), "no receipt without --typing"
+
+    status, out, err = run_cli(base + ["--transcribe"], env=env, session=FakeSession([]))
+    assert status == errors.CODES["not_implemented"].exit_status and "#7" in err, (status, err)
+
+    for responses, want in [([FakeResponse(401, {"error": {"code": 190}})], 4),
+                            ([FakeResponse(409, {"error": {"code": 1752041}})], 9),
+                            ([FakeResponse(503, {"error": {"code": 131016}})] * 2, 7)]:
+        status, out, err = run_cli(base, env=env, session=FakeSession(responses))
+        assert status == want, (want, status, err)
+        assert "Traceback" not in err
+print("json and human output; dedup silences a redelivered batch; creator recorded then used by send; --typing posts receipts; 401/409/503 exit 4/9/7")
+
+# --------------------------------------------------------------------------- recv: crash window and follow
+section("recv: crash window and follow")
+with tempfile.TemporaryDirectory() as home:
+    env = {"HOME": home, state.TOKEN_ENV: "secret-token"}
+    sdir = str(Path(home) / "state")
+
+    class FailingStore(store.Store):
+        """Dies while recording the second message, the way a kill would."""
+
+        def add(self, msg_id, direction, text=""):
+            if msg_id == "wamid.two":
+                raise KeyboardInterrupt("killed mid-batch")
+            return super().add(msg_id, direction, text)
+
+    original = cli.Store
+    cli.Store = FailingStore
+    try:
+        session = FakeSession([envelope(msg("wamid.one"), msg("wamid.two"))])
+        status, out, err = run_cli(["--state-dir", sdir, "recv", "--json"], env=env, session=session)
+    finally:
+        cli.Store = original
+    assert status == 130, status
+    assert store.Store(sdir).offset() is None, "a batch that did not finish must not move the cursor"
+    assert store.Store(sdir).seen("wamid.one") and not store.Store(sdir).seen("wamid.two")
+    assert "wamid.two" in out, "the message was printed before it was recorded — it repeats rather than vanishing"
+
+    # the same batch on the next run redelivers only what was not recorded
+    session = FakeSession([envelope(msg("wamid.one"), msg("wamid.two"))])
+    status, out, err = run_cli(["--state-dir", sdir, "recv", "--json"], env=env, session=session)
+    assert [json.loads(line)["id"] for line in out.strip().splitlines()] == ["wamid.two"], out
+
+    # follow: two 503s back off 1s then 2s, then the batch arrives
+    slept = []
+    session = FakeSession([FakeResponse(503), FakeResponse(503),
+                           envelope(msg("wamid.later"), next_offset="off-9")])
+
+    class StopAfterBatch(store.Store):
+        def set_offset(self, value):
+            super().set_offset(value)
+            raise KeyboardInterrupt("user pressed ctrl-c")
+
+    cli.Store = StopAfterBatch
+    try:
+        status, out, err = run_cli(["--state-dir", sdir, "recv", "--json", "--follow"], env=env,
+                                   session=session, sleep=slept.append)
+    finally:
+        cli.Store = original
+    assert status == 130, status
+    assert slept == [1, 2], f"backoff doubles from 1s: {slept}"
+    assert "wamid.later" in out and store.Store(sdir).offset() == "off-9"
+    assert err.count("retrying in") == 2 and "unreachable" in err, err
+print("a kill mid-batch repeats rather than loses; follow backs off 1s then 2s and recovers; ctrl-c exits 130 with the cursor at the last complete batch")
+
 # --------------------------------------------------------------------------- module entry point
 section("module entry point")
 proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "--version"], capture_output=True, text=True, cwd=ROOT,
                       env={**os.environ, "PYTHONPATH": str(ROOT)})
 assert proc.returncode == 0, proc.stderr
 assert installed in proc.stdout, proc.stdout
-# recv, not send: send would resolve real state, and this only proves the entry point.
-proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "recv"], capture_output=True, text=True, cwd=ROOT,
+# a command that is still a stub: this proves the entry point, not the feature,
+# and a real one would resolve real state on the developer's machine.
+proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "media", "get", "abc"], capture_output=True, text=True, cwd=ROOT,
                       env={**os.environ, "PYTHONPATH": str(ROOT)})
 assert proc.returncode == errors.CODES["not_implemented"].exit_status, proc.returncode
 assert "Traceback" not in proc.stderr, proc.stderr

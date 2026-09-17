@@ -13,7 +13,6 @@ Up: [docs/INDEX.md](../INDEX.md). Written by `/create-plan` into `backlog/`; `/i
 ## Backlog
 | Plan | Problem it solves | Depends on |
 |---|---|---|
-| [GH-5-recv](backlog/GH-5-recv.md) | Nothing can read what arrives: adds the long-poll, the cursor written only after a batch, dedup, backoff, and the creator record that retires `--to` | #4 (merged) |
 
 ## Active
 | Plan | Started | Issue |
@@ -22,6 +21,7 @@ Up: [docs/INDEX.md](../INDEX.md). Written by `/create-plan` into `backlog/`; `/i
 ## Completed
 | Plan | Shipped | Summary |
 |---|---|---|
+| [GH-5-recv](completed/GH-5-recv.md) | 2026-09-17 | `whatsapp-agent recv` reads what arrives: long-poll with the cursor written only after a batch, dedup by message id, JSON or human output, `--follow` with exponential backoff, `--typing`, `--replay`, a 409 exiting 9, and the creator record that retires `--to` on `send` |
 | [GH-4-send](completed/GH-4-send.md) | 2026-09-17 | `whatsapp-agent send` reaches the phone: rate limiter, HTTP layer mapping every response onto auth / rejected / unavailable, markdown conversion and `(i/n)` chunking, the message store, and `--dry-run` |
 | [GH-2-package-skeleton](completed/GH-2-package-skeleton.md) | 2026-09-17 | `pip install -e .` gives a working `whatsapp-agent`: version from `pyproject.toml`, five failure codes with unique exit statuses, token from env then `--token-file`, state under XDG and never the cwd, every subcommand present as a stub exiting 5. `tests/smoke.py` is the repo check and CI is now enforcing |
 
