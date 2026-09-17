@@ -21,6 +21,7 @@ Up: [docs/INDEX.md](../INDEX.md). Written by `/create-plan` into `backlog/`; `/i
 ## Completed
 | Plan | Shipped | Summary |
 |---|---|---|
+| [GH-4-send](completed/GH-4-send.md) | 2026-09-17 | `whatsapp-agent send` reaches the phone: rate limiter, HTTP layer mapping every response onto auth / rejected / unavailable, markdown conversion and `(i/n)` chunking, the message store, and `--dry-run` |
 | [GH-2-package-skeleton](completed/GH-2-package-skeleton.md) | 2026-09-17 | `pip install -e .` gives a working `whatsapp-agent`: version from `pyproject.toml`, five failure codes with unique exit statuses, token from env then `--token-file`, state under XDG and never the cwd, every subcommand present as a stub exiting 5. `tests/smoke.py` is the repo check and CI is now enforcing |
 
 ## Superseded

@@ -6,8 +6,8 @@ framework into every dependent's environment is a worse library, and this
 surface is small enough that the standard library covers it.
 
 The subcommands below parse their arguments and then fail with
-`not_implemented` until their own ticket lands — #4 send, #5 recv, #6 media,
-#7 transcribe. They exit non-zero on purpose: a stub that exits 0 would make an
+`not_implemented` until their own ticket lands — #5 recv, #6 media, #7
+transcribe. They exit non-zero on purpose: a stub that exits 0 would make an
 unimplemented command look like a passing one.
 """
 
@@ -17,14 +17,39 @@ import sys
 import traceback
 
 from . import __version__
+from .client import WhatsApp
 from .errors import CODES, WhatsAppError, classify, exit_status
-from .state import DEFAULT_PROFILE, TOKEN_ENV
+from .state import DEFAULT_PROFILE, TOKEN_ENV, resolve_token, state_dir
+from .store import Store
+from .text import DEFAULT_CHUNK, chunks, numbered, to_whatsapp
 
 DEBUG_ENV = "WHATSAPP_AGENT_DEBUG"
 
 
 def _todo(command, issue):
     raise WhatsAppError("not_implemented", f"{command} lands in #{issue}")
+
+
+def _send(args, env=None, session=None):
+    """Send one text. Recipient: --to, else the creator recv recorded (#5)."""
+    directory = state_dir(args.profile, args.state_dir, env=env)
+    store = Store(directory)
+    to = args.to or store.creator()
+    if not to:
+        raise WhatsAppError("no_recipient", "no --to and no creator recorded yet")
+
+    if args.dry_run:
+        # Rehearse a long message without spending one: the same conversion and
+        # split the wire would see, no call, no store record, no token needed.
+        for part in numbered(chunks(to_whatsapp(args.text), DEFAULT_CHUNK)):
+            print(part)
+            print("---")
+        return
+
+    client = WhatsApp(resolve_token(args.token_file, env=env), session=session)
+    for sent in client.send(to, args.text):
+        store.add(sent.id, "out", sent.text)
+        print(sent.id)
 
 
 def build_parser():
@@ -42,8 +67,9 @@ def build_parser():
 
     p_send = sub.add_parser("send", help="send a message to the creator")
     p_send.add_argument("text", help="the message body; split under the platform cap")
-    p_send.add_argument("--to", metavar="USER", help="recipient id (default: the stored creator)")
-    p_send.set_defaults(func=lambda args: _todo("send", 4))
+    p_send.add_argument("--to", metavar="USER", help="recipient id (default: the creator recv recorded)")
+    p_send.add_argument("--dry-run", action="store_true", help="print the parts that would be sent, send nothing")
+    p_send.set_defaults(func=_send)
 
     p_recv = sub.add_parser("recv", help="read new messages since the stored cursor")
     p_recv.add_argument("--follow", action="store_true", help="hold the long-poll open and stream")
@@ -70,12 +96,16 @@ def build_parser():
     return parser
 
 
-def main(argv=None, env=None):
+def main(argv=None, env=None, session=None):
+    """`session` is for the check: any object with `.request` stands in for the network."""
     env = os.environ if env is None else env
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        args.func(args)
+        if args.func is _send:
+            _send(args, env=env, session=session)
+        else:
+            args.func(args)
     except WhatsAppError as exc:
         return _fail(exc, exc.code, env)
     except KeyboardInterrupt:
