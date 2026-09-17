@@ -17,7 +17,7 @@ Format: every document here is markdown with a small YAML frontmatter (`type` re
 | [`brainstorm/`](brainstorm/INDEX.md) | WHAT and WHY, before any plan — approaches considered, the one leaned toward, open questions | `/brainstorm` | `/grill-me`, `/to-spec` |
 | [`specs/`](specs/INDEX.md) | Numbered WHAT/WHY contracts. Temporary — once ticketed, the GitHub issue is the truth | `/to-spec` | `/file-an-issue`, `/create-plan` |
 | [`exec-plans/`](exec-plans/INDEX.md) | HOW: phased, `file:line`-grounded plans with provable criteria, moving `backlog → active → completed` (or `superseded`) | `/create-plan`, moved by `/implement` | `/implement`, `/review`, `/open-pr` |
-| `feat-checklist/` | Acceptance checklists per slug — created by the first `/review` | `/review` | `/open-pr` |
+| [`feat-checklist/`](feat-checklist/INDEX.md) | Acceptance checklists per slug: what was proven, what needs a human, what failed | `/review` | `/open-pr` (seeds the Test Plan) |
 
 ## Outside docs/
 
