@@ -1,0 +1,82 @@
+name: release
+
+# Landing on main is the release. The version in pyproject.toml decides what is
+# published; if that version is already tagged, everything below no-ops, so a
+# docs-only promote never republishes.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write   # push the tag, create the GitHub Release
+  id-token: write   # PyPI trusted publishing (OIDC, no API token in secrets)
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Decide whether there is a release to make
+        id: decide
+        run: |
+          if [ ! -f pyproject.toml ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::no pyproject.toml yet — nothing to release"
+            exit 0
+          fi
+          VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::v$VERSION is already tagged — nothing to release"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::releasing v$VERSION"
+          fi
+
+      - name: Build sdist and wheel
+        if: steps.decide.outputs.skip == 'false'
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          twine check dist/*
+
+      - name: Verify the built wheel installs and runs
+        if: steps.decide.outputs.skip == 'false'
+        run: |
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install dist/*.whl
+          /tmp/verify/bin/whatsapp-agent --version
+
+      # PyPI first: if this fails there is no tag and no Release, so the next
+      # push to main retries the same version cleanly.
+      - name: Publish to PyPI
+        if: steps.decide.outputs.skip == 'false'
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Tag and publish the GitHub Release
+        if: steps.decide.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
+          gh release create "v$VERSION" \
+            --title "v$VERSION" \
+            --generate-notes \
+            dist/*
