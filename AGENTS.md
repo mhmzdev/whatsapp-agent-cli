@@ -42,7 +42,7 @@ The relay is where [`hisab-whatsapp`](https://github.com/mhmzdev/hisab-whatsapp)
 
 | What | Command |
 |---|---|
-| The check (run before calling anything done) | none yet — the first plan defines it and updates `check:` below |
+| The check (run before calling anything done) | `python3 tests/smoke.py` — created by [#2](https://github.com/mhmzdev/whatsapp-agent-cli/issues/2); does not exist yet |
 
 ## How we work — the lifecycle
 
@@ -61,8 +61,12 @@ Artifacts: `docs/brainstorm/` · `docs/specs/` · `docs/exec-plans/{backlog,acti
 repo: mhmzdev/whatsapp-agent-cli
 trunk: main                      # PRs target this; never push to it directly
 issues_repo: mhmzdev/whatsapp-agent-cli
-project_board: undecided         # reuse "Hisab Engineering" (mhmzdev/projects/1) or a new board — /file-an-issue asks first
-check: none yet                  # set by the first plan
+project_board: 2                 # owner mhmzdev — "WA-CLI"
+board_fields:
+  Status: [Backlog, Ready, In progress, In review, Done]
+  Priority: [P0, P1, P2]
+  Size: [XS, S, M, L, XL]
+check: "python3 tests/smoke.py"  # created by #2; does not exist yet
 labels: read with `gh label list --repo mhmzdev/whatsapp-agent-cli`; apply only what exists, none is fine
 branch: "GH-<N>-<kebab-topic>"   # or <kebab-topic> without an issue
 pr:

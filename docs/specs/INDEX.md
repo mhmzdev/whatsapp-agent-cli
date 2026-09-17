@@ -12,4 +12,4 @@ Numbered WHAT/WHY contracts written by /to-spec. Status: draft → ticketed (par
 
 | Spec | Title | Status | Date |
 |---|---|---|---|
-| [001](001-transport-cli.md) | whatsapp-agent-cli, the transport layer | draft | 2026-09-17 |
+| [001](001-transport-cli.md) | whatsapp-agent-cli, the transport layer | ticketed (parent [#1](https://github.com/mhmzdev/whatsapp-agent-cli/issues/1)) | 2026-09-17 |

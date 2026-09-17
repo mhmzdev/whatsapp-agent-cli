@@ -43,12 +43,13 @@ Facts (trunk, check command, board, labels, docs paths, vocabulary) come from **
 
 ## Contract 4 — one owner per board transition
 
-Project board: see `AGENTS.md` → `project_board`. While it reads `undecided`, `file-an-issue` asks which board before creating anything. Status options are expected to be `Todo · In progress · Done`; read the real ones with `gh project field-list`.
+Project board: `mhmzdev/projects/2` ("WA-CLI"), Status `Backlog · Ready · In progress · In review · Done`, plus Priority and Size. Read the real field and option ids with `gh project field-list 2 --owner mhmzdev --format json`; never hard-code them.
 
 | Transition | Owner |
 |---|---|
-| → Todo | `file-an-issue`, at creation |
+| → Backlog (blocked) or Ready (unblocked) | `file-an-issue`, at creation |
 | → In progress | `implement` (on the human's say-so) |
+| → In review | `open-pr`, when the PR is opened |
 | → Done | the merge, via the PR's `Closes #N`. Never a skill |
 
 `create-plan` and `review` do not move the card. A plan is a contract: `create-plan` leaves no open question; `implement` refuses a plan that carries one.

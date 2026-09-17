@@ -1,7 +1,8 @@
 ---
 type: Spec
 slug: transport-cli
-status: draft
+status: ticketed
+parent: https://github.com/mhmzdev/whatsapp-agent-cli/issues/1
 last_verified: 2026-09-17
 ---
 
