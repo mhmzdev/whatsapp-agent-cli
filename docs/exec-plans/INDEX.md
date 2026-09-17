@@ -13,7 +13,6 @@ Up: [docs/INDEX.md](../INDEX.md). Written by `/create-plan` into `backlog/`; `/i
 ## Backlog
 | Plan | Problem it solves | Depends on |
 |---|---|---|
-| [GH-2-package-skeleton](backlog/GH-2-package-skeleton.md) | No package exists: makes `pip install -e .` produce a working `whatsapp-agent` that resolves its token and state dir, and creates the repo check every later ticket extends | nothing — everything in epic #1 depends on it |
 
 ## Active
 | Plan | Started | Issue |
@@ -22,6 +21,7 @@ Up: [docs/INDEX.md](../INDEX.md). Written by `/create-plan` into `backlog/`; `/i
 ## Completed
 | Plan | Shipped | Summary |
 |---|---|---|
+| [GH-2-package-skeleton](completed/GH-2-package-skeleton.md) | 2026-09-17 | `pip install -e .` gives a working `whatsapp-agent`: version from `pyproject.toml`, five failure codes with unique exit statuses, token from env then `--token-file`, state under XDG and never the cwd, every subcommand present as a stub exiting 5. `tests/smoke.py` is the repo check and CI is now enforcing |
 
 ## Superseded
 | Plan | Superseded by |
