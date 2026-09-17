@@ -13,6 +13,7 @@ Up: [docs/INDEX.md](../INDEX.md). Written by `/create-plan` into `backlog/`; `/i
 ## Backlog
 | Plan | Problem it solves | Depends on |
 |---|---|---|
+| [GH-7-transcribe](backlog/GH-7-transcribe.md) | Voice notes arrive as a media id and nothing else; adds Gemini transcription, `recv --transcribe`, and three codes — and drops the `[transcribe]` extra, since the REST call needs no SDK | #5, #6 (merged) |
 
 ## Active
 | Plan | Started | Issue |
