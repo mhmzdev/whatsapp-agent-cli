@@ -27,7 +27,8 @@ classifiers = [
 dependencies = ["requests>=2.32"]
 
 [project.optional-dependencies]
-transcribe = ["google-genai>=1.0"]
+# No extra for transcription: Gemini takes audio inline over plain HTTP, so the
+# requests dependency already covers it. Offline transcription will need one (#20).
 dev = ["build", "twine"]
 
 [project.scripts]

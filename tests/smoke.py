@@ -10,6 +10,7 @@ CI reads as a sentence rather than a stack of fixtures. It works from a source
 checkout as well as an installed package.
 """
 
+import base64
 import contextlib
 import io
 import json
@@ -25,9 +26,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import whatsapp_agent  # noqa: E402
-from whatsapp_agent import cli, client, errors, media, ratelimit, state, store, text  # noqa: E402
+from whatsapp_agent import cli, client, errors, media, ratelimit, state, store, text, transcribe  # noqa: E402
 
-FORBIDDEN = ("Traceback", 'HTTP', '{"error"', "OAuthException", "gemini", "openai")
+# What must never reach a user's terminal: our internals, or a provider's raw words.
+# Provider *names* are deliberately allowed here, unlike in hisab: a developer who has
+# to set GEMINI_API_KEY needs to be told which variable, and hiding the name to keep a
+# rule that was written for a ledger's end user would make the message useless.
+FORBIDDEN = ("Traceback", "HTTP", '{"error"', "OAuthException", "fbtrace")
 
 
 def section(title):
@@ -69,6 +74,7 @@ def run_cli(argv, env=None, session=None, sleep=None):
 section("version")
 raw = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 pyproject = project_fields_regex(raw)
+project_extras = re.findall(r"^([a-z]+)\s*=\s*\[", raw.split("[project.optional-dependencies]", 1)[1].split("\n[", 1)[0], re.MULTILINE) if "[project.optional-dependencies]" in raw else []
 try:
     import tomllib  # 3.11+
 except ModuleNotFoundError:
@@ -159,18 +165,13 @@ status, out, err = run_cli(["--help"])
 assert status == 0, status
 for name in ("send", "recv", "media", "transcribe"):
     assert name in out, f"--help does not list {name}"
-stubs = [(["transcribe", "note.ogg"], 7)]
-for argv, issue in stubs:
-    status, out, err = run_cli(argv)
-    assert status == errors.CODES["not_implemented"].exit_status, (argv, status)
-    assert f"#{issue}" in err, (argv, err)
-    assert "Traceback" not in err, (argv, err)
-    assert out == "", (argv, out)
+# every subcommand is implemented now; not_implemented stays registered for the next one
+assert "not_implemented" in errors.CODES
 status, out, err = run_cli(["nonsense"])
 assert status == 2, status
 status, out, err = run_cli([])
 assert status == 2, "no subcommand must be a usage error, not a success"
-print(f"--help lists every subcommand; {len(stubs)} stubs exit {errors.CODES['not_implemented'].exit_status} naming their issue; bad usage exits 2; no traceback")
+print("--help lists every subcommand; bad usage exits 2; no subcommand exits 2; no traceback")
 
 # --------------------------------------------------------------------------- rate limiter
 section("rate limiter")
@@ -470,8 +471,9 @@ with tempfile.TemporaryDirectory() as home:
     run_cli(base, env=env, session=session)
     assert not any(c["url"].endswith("/statuses") for c in session.calls), "no receipt without --typing"
 
-    status, out, err = run_cli(base + ["--transcribe"], env=env, session=FakeSession([]))
-    assert status == errors.CODES["not_implemented"].exit_status and "#7" in err, (status, err)
+    # --transcribe with no key warns rather than refusing; the section below proves the rest
+    status, out, err = run_cli(base + ["--transcribe"], env=env, session=FakeSession([envelope()]))
+    assert status == 0 and "GEMINI_API_KEY is not set" in err, (status, err)
 
     for responses, want in [([FakeResponse(401, {"error": {"code": 190}})], 4),
                             ([FakeResponse(409, {"error": {"code": 1752041}})], 9),
@@ -735,8 +737,10 @@ assert not invented, f"docs/errors.md documents codes that do not exist: {invent
 for name, (exit_status, retry) in doc_rows.items():
     assert errors.CODES[name].exit_status == exit_status, f"{name}: doc says exit {exit_status}, code says {errors.CODES[name].exit_status}"
     assert errors.CODES[name].retry == retry, f"{name}: doc and code disagree on whether retrying helps"
-assert errors.CODES["platform_unavailable"].retry is True, "the one retryable code must say so"
-assert sum(1 for e in errors.CODES.values() if e.retry) == 1, "only unavailability is worth retrying"
+# Retryable means "the other side was unreachable", nothing else. Keeping the set
+# explicit means a new code cannot quietly claim a caller should loop on it.
+retryable = {name for name, entry in errors.CODES.items() if entry.retry}
+assert retryable == {"platform_unavailable", "transcription_unavailable"}, f"unexpected retryable set: {retryable}"
 
 status, out, err = run_cli(["errors"])
 assert status == 0, err
@@ -751,7 +755,7 @@ assert "errors.md" in out, "the command points at the fuller table"
 status, out, err = run_cli(["send"])  # no text, no attachment, no state needed
 assert err.startswith("error [bad_usage]:"), f"a failure names its code first: {err!r}"
 with tempfile.TemporaryDirectory() as home:
-    for argv, code in [(["transcribe", "x.ogg"], "not_implemented"),
+    for argv, code in [(["transcribe", "x.ogg"], "bad_usage"),
                        (["send", "hi", "--to", "u"], "no_token"),
                        (["send", "--to", "u", "--file", "/nope/missing.png"], "no_token")]:
         status, out, err = run_cli(argv, env={"HOME": home})
@@ -779,13 +783,15 @@ assert {"send", "recv", "media", "errors"} <= shown, f"the README stopped docume
 
 # claims that would quietly rot
 assert f'pip install whatsapp-agent' in readme, "the README must name the distribution, not the repo"
-assert "[transcribe]" in readme, "the optional extra is part of the install story"
+assert "GEMINI_API_KEY" in readme, "transcription needs a key and the README must say which"
 assert state.TOKEN_ENV in readme, "the token env var must be named"
 assert "docs/errors.md" in readme and "whatsapp-agent errors" in readme
 # markdown emphasis sits inside the sentence, so match on the words, not the literal
 assert re.search(r"before\W+(\*\*)?the subcommand", readme), "the globals-first gotcha stays documented"
-declared_extras = ["transcribe"]
-for extra in declared_extras:
+declared_extras = set(project_extras)
+mentioned_extras = set(re.findall(r'whatsapp-agent\[([a-z]+)\]', readme))
+assert mentioned_extras <= declared_extras, f"the README offers extras that pyproject does not declare: {mentioned_extras - declared_extras}"
+for extra in declared_extras - {"dev"}:
     assert f"[{extra}]" in readme, f"pyproject declares the {extra} extra; the README never mentions it"
 
 # nothing from a personal setup
@@ -793,17 +799,126 @@ for leak in ("_hisab", "_loop", "/Users/", "vault", "VPS", "hamza.6"):
     assert leak.lower() not in readme.lower(), f"README leaks {leak!r}"
 print(f"README's {len(shown)} commands all exist, its Python example only uses exported names, and it names the extra, the env var and the error table")
 
+# --------------------------------------------------------------------------- transcription
+section("transcription")
+with tempfile.TemporaryDirectory() as tmp:
+    note = Path(tmp) / "note.ogg"
+    note.write_bytes(b"OggS" + b"0" * 64)
+
+    def gemini_ok(text="call me back at six"):
+        return FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]})
+
+    session = FakeSession([gemini_ok()])
+    got = transcribe.transcribe(note, session=session, env={"GEMINI_API_KEY": "gem-key"})
+    assert got == "call me back at six", got
+    call = session.calls[0]
+    assert call["headers"]["x-goog-api-key"] == "gem-key" and "key=" not in call["url"], "the key travels in a header, not a url"
+    assert transcribe.DEFAULT_MODEL in call["url"], call["url"]
+    part = call["json"]["contents"][0]["parts"][0]["inline_data"]
+    assert part["mime_type"] == "audio/ogg" and base64.b64decode(part["data"]) == note.read_bytes(), "the audio goes inline, intact"
+    assert "Output only the transcript" in call["json"]["contents"][0]["parts"][1]["text"]
+
+    session = FakeSession([gemini_ok()])
+    transcribe.transcribe(note, model="gemini-x", language="urdu", session=session, env={"GEMINI_API_KEY": "k"})
+    assert "gemini-x" in session.calls[0]["url"]
+    assert "urdu" in session.calls[0]["json"]["contents"][0]["parts"][1]["text"], "a language hint reaches the prompt"
+
+    failures = [
+        (FakeResponse(200, {"candidates": []}), "transcription_failed"),          # a refusal answers 200
+        (FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": "   "}]}}]}), "transcription_failed"),
+        (FakeResponse(200, None, "not json"), "transcription_failed"),
+        (FakeResponse(400, {"error": {"message": "bad request"}}), "transcription_failed"),
+        (FakeResponse(503), "transcription_unavailable"),
+        (FakeResponse(429), "transcription_unavailable"),
+        (FakeTransportError("dns went away"), "transcription_unavailable"),
+    ]
+    for response, want in failures:
+        try:
+            transcribe.transcribe(note, session=FakeSession([response]), env={"GEMINI_API_KEY": "k"})
+            raise AssertionError(f"expected {want}")
+        except errors.WhatsAppError as exc:
+            assert exc.code == want, (want, exc.code)
+            assert "k" not in exc.message, "no key material in a message"
+    assert errors.CODES["transcription_unavailable"].retry is True, "an unreachable provider is worth retrying"
+    assert errors.CODES["transcription_failed"].retry is False, "a refusal is not"
+
+    try:
+        transcribe.transcribe(note, session=FakeSession([]), env={})
+        raise AssertionError("expected no_transcription_key")
+    except errors.WhatsAppError as exc:
+        assert exc.code == "no_transcription_key" and exc.exit_status == 12, exc.code
+        assert "GEMINI_API_KEY" in exc.detail
+    for bad, why in [((Path(tmp) / "nope.ogg"), "a missing file"), ((Path(tmp) / "x.txt"), "a non-audio file")]:
+        bad.write_bytes(b"x") if bad.name == "x.txt" else None
+        try:
+            transcribe.transcribe(bad, session=FakeSession([]), env={"GEMINI_API_KEY": "k"})
+            raise AssertionError(f"expected bad_usage for {why}")
+        except errors.WhatsAppError as exc:
+            assert exc.code == "bad_usage", (why, exc.code)
+    try:
+        transcribe.transcribe(note, provider="local", session=FakeSession([]), env={"GEMINI_API_KEY": "k"})
+        raise AssertionError("an unbuilt provider must be refused")
+    except errors.WhatsAppError as exc:
+        assert exc.code == "bad_usage" and "#20" in exc.detail, exc.detail
+
+    status, out, err = run_cli(["transcribe", str(note)], env={"GEMINI_API_KEY": "k"}, session=FakeSession([gemini_ok("hello there")]))
+    assert status == 0 and out == "hello there\n", (status, repr(out), err)
+    assert err == "", "the transcript is all that is printed"
+print(f"audio goes inline with the key in a header; {len(failures)} failure modes split into 13 retryable and 14 not; no key exits 12; the command prints only the transcript")
+
+# --------------------------------------------------------------------------- recv --transcribe
+section("recv --transcribe")
+with tempfile.TemporaryDirectory() as home:
+    env = {"HOME": home, state.TOKEN_ENV: "secret-token", "GEMINI_API_KEY": "gem-key"}
+    sdir = str(Path(home) / "state")
+    voice = msg("wamid.V", kind="audio", voice=True)
+    meta = FakeResponse(200, {"url": "https://lookaside.example/v", "mime_type": "audio/ogg"})
+
+    session = FakeSession([envelope(voice, msg("wamid.T", "typed")), meta, FakeBytes(200, b"OggS-audio"),
+                           FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": "kal shaam ko aana"}]}}]})])
+    status, out, err = run_cli(["--state-dir", sdir, "recv", "--json", "--transcribe"], env=env, session=session)
+    assert status == 0, (status, err)
+    delivered = [json.loads(line) for line in out.strip().splitlines()]
+    spoken = delivered[0]
+    assert spoken["type"] == "audio" and spoken["audio"]["id"] == "media-wamid.V", "the message keeps its shape"
+    assert spoken["text"]["body"] == "kal shaam ko aana" and spoken["transcribed"] is True
+    assert delivered[1]["id"] == "wamid.T" and "transcribed" not in delivered[1], "a typed message is untouched"
+    assert store.Store(sdir).lookup("wamid.V") == "kal shaam ko aana", "the store records words, not <audio …>"
+    assert f"transcribed wamid.V" in err, "each billed call prints a line"
+    assert not list((Path(sdir).resolve() / "media").glob("*")), "the audio is not kept in the media directory"
+    assert not [p for p in Path(sdir).resolve().rglob("*.ogg")], "and not anywhere else in the state directory"
+
+    # a failing provider still delivers the message, marked, and keeps the stream moving
+    session = FakeSession([envelope(msg("wamid.W", kind="audio"), next_offset="off-w"), meta,
+                           FakeBytes(200, b"OggS"), FakeResponse(503)])
+    status, out, err = run_cli(["--state-dir", sdir, "recv", "--json", "--transcribe"], env=env, session=session)
+    assert status == 0, (status, err)
+    marked = json.loads(out.strip())
+    assert marked["transcribed"] is False and marked["transcription_error"] == "transcription_unavailable", marked
+    assert "text" not in marked, "a failed transcription invents no words"
+    assert "could not transcribe wamid.W" in err
+    assert store.Store(sdir).offset() == "off-w", "the batch still completed"
+
+    # no key: one warning up front, messages still delivered
+    session = FakeSession([envelope(msg("wamid.X", kind="audio"), next_offset="off-x"), meta, FakeBytes(200, b"OggS")])
+    status, out, err = run_cli(["--state-dir", sdir, "recv", "--json", "--transcribe"],
+                               env={"HOME": home, state.TOKEN_ENV: "secret-token"}, session=session)
+    assert status == 0, (status, err)
+    assert err.count("GEMINI_API_KEY is not set") == 1, f"warned once, up front: {err!r}"
+    assert json.loads(out.strip())["transcribed"] is False
+print("a voice note keeps its shape and gains text.body; the audio never lands in the state dir; a failure delivers it marked; no key warns once and carries on")
+
 # --------------------------------------------------------------------------- module entry point
 section("module entry point")
 proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "--version"], capture_output=True, text=True, cwd=ROOT,
                       env={**os.environ, "PYTHONPATH": str(ROOT)})
 assert proc.returncode == 0, proc.stderr
 assert installed in proc.stdout, proc.stdout
-# a command that is still a stub: this proves the entry point, not the feature,
-# and a real one would resolve real state on the developer's machine.
-proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "transcribe", "note.ogg"], capture_output=True, text=True, cwd=ROOT,
+# a command that needs no state and no network: this proves the entry point, not a feature
+proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "errors"], capture_output=True, text=True, cwd=ROOT,
                       env={**os.environ, "PYTHONPATH": str(ROOT)})
-assert proc.returncode == errors.CODES["not_implemented"].exit_status, proc.returncode
+assert proc.returncode == 0, proc.stderr
+assert "platform_rejected" in proc.stdout, proc.stdout[:200]
 assert "Traceback" not in proc.stderr, proc.stderr
 print("python -m whatsapp_agent matches the installed command, including its exit status")
 
