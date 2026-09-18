@@ -794,10 +794,19 @@ assert mentioned_extras <= declared_extras, f"the README offers extras that pypr
 for extra in declared_extras - {"dev"}:
     assert f"[{extra}]" in readme, f"pyproject declares the {extra} extra; the README never mentions it"
 
+# every variable the code reads is documented in .env.example
+example = (ROOT / ".env.example").read_text(encoding="utf-8")
+# literals, not imports: this list is the contract, and it must not quietly shrink
+# when a module that defines one of these names is refactored away
+for variable in (state.TOKEN_ENV, cli.DEBUG_ENV, "GEMINI_API_KEY", "XDG_STATE_HOME"):
+    assert variable in example, f"{variable} is read by the code but missing from .env.example"
+assert "gitignored" in example and "source .env" in example, ".env.example must say how it is loaded"
+assert not re.search(r"^[A-Z_]+=\S", example, re.MULTILINE), ".env.example must never carry a value"
+
 # nothing from a personal setup
 for leak in ("_hisab", "_loop", "/Users/", "vault", "VPS", "hamza.6"):
     assert leak.lower() not in readme.lower(), f"README leaks {leak!r}"
-print(f"README's {len(shown)} commands all exist, its Python example only uses exported names, and it names the extra, the env var and the error table")
+print(f".env.example documents every variable the code reads; README's {len(shown)} commands all exist, its Python example only uses exported names, and it names the extra, the env var and the error table")
 
 # --------------------------------------------------------------------------- transcription
 section("transcription")
