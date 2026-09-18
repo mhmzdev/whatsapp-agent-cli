@@ -933,11 +933,15 @@ print("python -m whatsapp_agent matches the installed command, including its exi
 
 # --------------------------------------------------------------------------- no stray state
 section("no stray state")
+# Anything hidden is a tool's own business (.git, .venv, .live-state), as are build
+# outputs; what matters is that a check run leaves no cursor, log or media in the
+# tracked tree.
+IGNORED_DIRS = {"build", "dist"}
 strays = [
     str(p.relative_to(ROOT))
     for p in ROOT.rglob("*")
-    if ".git" not in p.parts
-    and (p.name in ("offset", "messages.jsonl", "whatsapp-agent") or p.suffix == ".jsonl")
+    if not any(part.startswith(".") or part in IGNORED_DIRS or part.endswith(".egg-info") for part in p.relative_to(ROOT).parts)
+    and (p.name in ("offset", "messages.jsonl", "creator") or p.suffix == ".jsonl")
 ]
 assert not strays, f"the check left state behind: {strays}"
 print("no cursor, store or media artifact anywhere in the repo")
