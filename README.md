@@ -21,10 +21,11 @@ pip install whatsapp-agent
 
 The distribution is `whatsapp-agent`, the command is `whatsapp-agent`, the module is `whatsapp_agent`. (This repository is named `whatsapp-agent-cli`, which was already taken on PyPI by an unrelated project.)
 
-Voice-note transcription is an optional extra, because it needs a speech-to-text provider and a key of its own:
+Transcription needs no extra install — only a key, because it is an ordinary HTTP call:
 
 ```bash
-pip install "whatsapp-agent[transcribe]"
+export GEMINI_API_KEY='…'
+whatsapp-agent transcribe voice-note.ogg
 ```
 
 ## Get a token
@@ -53,12 +54,22 @@ open "$(whatsapp-agent media get <media-id>)"
 
 The first `recv` records who you are, after which `send` needs no `--to`.
 
+A voice note keeps its shape and gains the words, so code that reads `text.body` finds them and nothing about the message is lost:
+
+```json
+{"id": "wamid.A", "type": "audio", "audio": {"id": "media-1", "voice": true},
+ "text": {"body": "call me back at six"}, "transcribed": true}
+```
+
+Without a key, `recv --transcribe` warns once and delivers voice notes marked `transcribed: false` rather than stopping.
+
 | Command | Does |
 |---|---|
 | `send <text>` | Send a message. Splits a long body on paragraph boundaries, numbers the parts `(i/n)`, converts markdown to WhatsApp formatting |
 | `send --file <path>` | Upload and attach. `--media <id>` attaches something already uploaded |
 | `send --dry-run` | Print exactly what would be sent, send nothing, need no token |
-| `recv` | Messages since the last run. `--json` for one object per line, `--follow` to stream, `--typing` to show a typing indicator while you work |
+| `recv` | Messages since the last run. `--json` for one object per line, `--follow` to stream, `--typing` to show a typing indicator while you work, `--transcribe` to add words to voice notes |
+| `transcribe <file>` | Audio in, text out. Gemini today; offline is [#20](https://github.com/mhmzdev/whatsapp-agent-cli/issues/20) |
 | `media get <id>` | Download to the state directory, or `--out DIR`. Prints the path and nothing else |
 | `media put <path>` | Upload, print the media id |
 | `errors` | The exit-code table |
@@ -114,9 +125,9 @@ The transport is also what [`hisab-whatsapp`](https://github.com/mhmzdev/hisab-w
 
 ## Status
 
-Working: `send`, `recv`, `media`, `errors` and the library behind them, each covered by a no-network check on Python 3.10 through 3.13.
+Working: `send`, `recv`, `media`, `transcribe`, `errors` and the library behind them, each covered by a no-network check on Python 3.10 through 3.13.
 
-Not yet: transcription ([#7](https://github.com/mhmzdev/whatsapp-agent-cli/issues/7)), the first PyPI release ([#8](https://github.com/mhmzdev/whatsapp-agent-cli/issues/8)), and the relay. Progress lives on [epic #1](https://github.com/mhmzdev/whatsapp-agent-cli/issues/1).
+Not yet: offline transcription ([#20](https://github.com/mhmzdev/whatsapp-agent-cli/issues/20)), the first PyPI release ([#8](https://github.com/mhmzdev/whatsapp-agent-cli/issues/8)), and the relay. Progress lives on [epic #1](https://github.com/mhmzdev/whatsapp-agent-cli/issues/1).
 
 ## Contributing
 

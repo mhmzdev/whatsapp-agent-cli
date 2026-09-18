@@ -5,8 +5,8 @@ argparse rather than click or typer: a transport library that pushes a CLI
 framework into every dependent's environment is a worse library, and this
 surface is small enough that the standard library covers it.
 
-The subcommands below parse their arguments and then fail with
-`not_implemented` until their own ticket lands — #7 transcribe. They exit non-zero on purpose: a stub that exits 0 would make an
+Every subcommand is real now; `not_implemented` stays in the table for the next
+one that is not. They exit non-zero on purpose: a stub that exits 0 would make an
 unimplemented command look like a passing one.
 """
 
@@ -19,7 +19,10 @@ import traceback
 from pathlib import Path
 
 from . import __version__
+import tempfile
+
 from . import media as media_types
+from . import transcribe as transcription
 from .client import WhatsApp
 from .errors import CODES, WhatsAppError, classify, exit_status
 from .state import DEFAULT_PROFILE, TOKEN_ENV, resolve_token, state_dir
@@ -94,6 +97,10 @@ BACKOFF_CAP = 60
 def _human(message):
     """One line per message: when, who, what kind, and the text or a placeholder."""
     kind = message.get("type", "?")
+    if kind != "text" and (message.get("text") or {}).get("body"):
+        # a transcribed voice note: show the words, and say where they came from
+        when = time.strftime("%H:%M:%S", time.localtime(int(message.get("timestamp", time.time()))))
+        return f"{when}  {message.get('from', '?')}  [{kind}] {message['text']['body']}"
     when = time.strftime("%H:%M:%S", time.localtime(int(message.get("timestamp", time.time()))))
     who = message.get("from", "?")
     if kind == "text":
@@ -107,10 +114,15 @@ def _human(message):
 
 
 def _text_of(message):
-    """What to record in the store: the body for text, a short placeholder otherwise.
-    The bytes behind a media id are #6's business, and transcription is #7's."""
-    if message.get("type") == "text":
-        return (message.get("text") or {}).get("body", "")
+    """What to record in the store: whatever words the message carries.
+
+    Keyed on the presence of a body rather than on the type, so a transcribed voice
+    note records what was said. Otherwise a quoted-reply lookup would return
+    `<audio media-1>` — technically true, useless to a caller.
+    """
+    body = (message.get("text") or {}).get("body")
+    if body:
+        return body
     return _human(message).split("  ", 2)[-1]
 
 
@@ -129,6 +141,50 @@ def _deliver(message, store, client, as_json, typing):
         store.set_creator(sender)
     if typing and client is not None:
         client.typing(message.get("id"))
+
+
+def _transcribe_command(args, env=None, session=None):
+    print(transcription.transcribe(Path(args.path).expanduser(), model=args.model, key_env=args.key_env,
+                                   language=args.language, provider=args.provider, session=session, env=env))
+
+
+def _audio_of(message):
+    """The audio payload of a voice note, or None. WhatsApp marks a recorded note
+    `voice: true`; an attached mp3 arrives as audio too and is worth transcribing
+    just the same."""
+    if message.get("type") != "audio":
+        return None
+    return message.get("audio") or {}
+
+
+def _transcribe_into(message, client, args, env, session, tmp_root):
+    """Fetch the voice note, transcribe it, and fold the words into the message.
+
+    The audio is deleted immediately either way: polling should not quietly
+    accumulate a recording of everything anyone ever said. The media id stays in
+    the message, so the bytes can be fetched again on purpose with `media get`.
+    """
+    audio = _audio_of(message)
+    media_id = (audio or {}).get("id")
+    if not media_id:
+        return
+    with tempfile.TemporaryDirectory(dir=tmp_root) as tmp:
+        try:
+            path, _mime = client.download(media_id, tmp)
+            text = transcription.transcribe(path, model=args.transcribe_model, key_env=args.key_env,
+                                            language=args.language, session=session, env=env)
+        except WhatsAppError as exc:
+            # A failed transcription must never cost the message: it is delivered
+            # marked, the reason travels with it, and the stream keeps moving.
+            message["transcribed"] = False
+            message["transcription_error"] = exc.code
+            print(f"warning: could not transcribe {message.get('id')}: {exc.message}",
+                  file=sys.stderr, flush=True)
+            return
+    message.setdefault("text", {})["body"] = text
+    message["transcribed"] = True
+    # One line per billed call, so an overnight --follow leaves a record of what it spent.
+    print(f"transcribed {message.get('id')}", file=sys.stderr, flush=True)
 
 
 def _sweep(directory, keep_hours, now=time.time):
@@ -170,9 +226,12 @@ def _media(args, env=None, session=None):
 def _recv(args, env=None, session=None, sleep=time.sleep):
     directory = state_dir(args.profile, args.state_dir, env=env)
     store = Store(directory)
-    if args.transcribe:
-        raise WhatsAppError("not_implemented", "recv --transcribe lands in #7")
     client = WhatsApp(resolve_token(args.token_file, env=env), session=session)
+
+    if args.transcribe and not transcription.api_key(args.key_env, env=env):
+        # Once, up front — not once per voice note, and not a reason to refuse to run.
+        print(f"warning: {args.key_env} is not set; voice notes will arrive untranscribed",
+              file=sys.stderr, flush=True)
 
     backoff = BACKOFF_START
     replay = args.replay
@@ -199,6 +258,8 @@ def _recv(args, env=None, session=None, sleep=time.sleep):
             for message in messages:
                 if store.seen(message.get("id")):
                     continue
+                if args.transcribe and _audio_of(message):
+                    _transcribe_into(message, client, args, env, session, directory)
                 _deliver(message, store, client, args.json, args.typing)
         except BrokenPipeError:
             # `recv | head` closed the pipe. Stopping without advancing means the
@@ -235,7 +296,11 @@ def build_parser():
     p_recv = sub.add_parser("recv", help="read new messages since the stored cursor")
     p_recv.add_argument("--follow", action="store_true", help="hold the long-poll open and stream")
     p_recv.add_argument("--json", action="store_true", help="one JSON object per line")
-    p_recv.add_argument("--transcribe", action="store_true", help="replace a voice note with its transcript")
+    p_recv.add_argument("--transcribe", action="store_true", help="add a transcript to each voice note (needs a transcription key)")
+    p_recv.add_argument("--transcribe-model", metavar="NAME", default=None, help=f"transcription model (default: {transcription.DEFAULT_MODEL})")
+    p_recv.add_argument("--key-env", metavar="NAME", default=transcription.DEFAULT_KEY_ENV,
+                        help="environment variable holding the transcription key (default: %(default)s)")
+    p_recv.add_argument("--language", metavar="NAME", default=None, help="hint the spoken language, e.g. urdu")
     p_recv.add_argument("--typing", action="store_true", help="mark each delivered message read and show the typing indicator")
     p_recv.add_argument("--limit", type=int, default=50, metavar="N", help="messages per poll (default: %(default)s)")
     p_recv.add_argument("--timeout", type=int, default=20, metavar="S", help="seconds to hold one poll open, max 25 (default: %(default)s)")
@@ -260,7 +325,12 @@ def build_parser():
 
     p_tr = sub.add_parser("transcribe", help="turn an audio file into text")
     p_tr.add_argument("path")
-    p_tr.set_defaults(func=lambda args: _todo("transcribe", 7))
+    p_tr.add_argument("--provider", default="gemini", help="transcription provider (default: %(default)s; offline is issue #20)")
+    p_tr.add_argument("--model", metavar="NAME", default=None, help=f"model to use (default: {transcription.DEFAULT_MODEL})")
+    p_tr.add_argument("--key-env", metavar="NAME", default=transcription.DEFAULT_KEY_ENV,
+                      help="environment variable holding the key (default: %(default)s)")
+    p_tr.add_argument("--language", metavar="NAME", default=None, help="hint the spoken language, e.g. urdu")
+    p_tr.set_defaults(func=_transcribe_command)
 
     return parser
 
@@ -274,6 +344,8 @@ def main(argv=None, env=None, session=None, sleep=None):
     try:
         if args.func is _send:
             _send(args, env=env, session=session)
+        elif args.func is _transcribe_command:
+            _transcribe_command(args, env=env, session=session)
         elif args.func is _media:
             _media(args, env=env, session=session)
         elif args.func is _recv:
