@@ -49,8 +49,7 @@ live: dev
 up: dev
 	@test -f .env || { echo "no .env — cp .env.example .env and fill it in"; exit 3; }
 	@echo "live inbox on the agent in .env. Photos and files land in .live-state/media. Ctrl-C to stop."
-	@set -a; . ./.env; set +a; \
-		$(CLI) --state-dir .live-state recv --follow --transcribe --download $(ARGS) \
+	@$(CLI) --state-dir .live-state recv --follow --transcribe --download $(ARGS) \
 		|| { status=$$?; [ $$status -eq 130 ] && echo "stopped." || exit $$status; }
 
 clean:

@@ -5,9 +5,11 @@
     make live ARGS="--send-only"
     make live ARGS="--audio note.ogg"
 
-Reads `.env` from the repository root if it is there (this script does; the CLI
-deliberately does not). Whatever is missing is skipped with a warning rather than
-failing the run, so a partial setup still proves what it can.
+Runs the CLI from the repository root, so the CLI reads `.env` there itself, exactly
+as it would for you, and says on stderr which variable came from where. This script
+reads the same file with the package's own parser only to decide what it can test.
+Whatever is missing is skipped with a warning rather than failing the run, so a
+partial setup still proves what it can.
 
 Nothing here touches your real state directory: everything lands in `.live-state/`,
 which `make clean` removes.
@@ -23,34 +25,30 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from wa_agent import envfile  # noqa: E402  (the parser the CLI uses, so the two never disagree)
+
 STATE = ROOT / ".live-state"
 CLI = ROOT / ".venv" / "bin" / "wa-agent"
 
 GREEN, YELLOW, RED, DIM, OFF = "\033[32m", "\033[33m", "\033[31m", "\033[2m", "\033[0m"
 
 
-def load_dotenv(path=ROOT / ".env"):
-    """Only this script reads .env. The CLI takes its token from the environment."""
-    if not path.exists():
-        return {}
-    found = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        value = value.strip().strip('"').strip("'")
-        if value:
-            found[key.strip()] = value
-    os.environ.update({k: v for k, v in found.items() if not os.environ.get(k)})
-    return found
+def load_dotenv():
+    """What the CLI will see: the shell, with `.env` filling the gaps. Read only to
+    decide what to test; the environment the CLI runs in is left alone, so the CLI
+    reads `.env` itself and reports it honestly."""
+    values, _skipped, _problem = envfile.load(ROOT)
+    merged, _sources = envfile.merge(os.environ, values)
+    return merged, sorted(values)
 
 
 def run(*args, env=None, check=False):
     """Run the CLI, echo what was run, return (status, stdout, stderr)."""
     cmd = [str(CLI), "--state-dir", str(STATE), *args]
     print(f"{DIM}$ wa-agent {' '.join(_shown(a) for a in args)}{OFF}")
-    proc = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, **(env or {})})
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT, env={**os.environ, **(env or {})})
     for line in proc.stdout.splitlines():
         print(f"  {line}")
     for line in proc.stderr.splitlines():
@@ -87,14 +85,14 @@ def main():
 
     if not CLI.exists():
         sys.exit("run `make dev` first")
-    loaded = load_dotenv()
+    seen_env, loaded = load_dotenv()
     STATE.mkdir(parents=True, exist_ok=True)
     print(f"{DIM}state: {STATE}{OFF}")
     if loaded:
-        print(f"{DIM}.env supplied: {', '.join(sorted(loaded))}{OFF}")
+        print(f"{DIM}.env sets: {', '.join(loaded)} (the shell wins where both do){OFF}")
 
-    token = os.environ.get("WHATSAPP_AGENT_TOKEN", "").strip()
-    gemini = os.environ.get("GEMINI_API_KEY", "").strip()
+    token = seen_env.get("WHATSAPP_AGENT_TOKEN", "").strip()
+    gemini = seen_env.get("GEMINI_API_KEY", "").strip()
 
     # ---------------------------------------------------------------- no credentials needed
     step("the tool itself")

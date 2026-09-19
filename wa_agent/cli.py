@@ -21,6 +21,7 @@ from pathlib import Path
 
 from . import __version__
 from . import doctor as doctor_checks
+from . import envfile
 from . import local as local_engine
 from . import media as media_types
 from . import transcribe as transcription
@@ -354,12 +355,15 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog="wa-agent",
         description="Talk to the WhatsApp Agent Platform: send, receive, media, transcription.",
-        epilog=f"Token: ${TOKEN_ENV}, or --token-file. State: $XDG_STATE_HOME/wa-agent/<profile>.",
+        epilog=(f"Token: ${TOKEN_ENV}, else --token-file, else ./.env. The shell always wins over ./.env. "
+                "State: $XDG_STATE_HOME/wa-agent/<profile>."),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--token-file", metavar="PATH", help=f"file holding the token; ${TOKEN_ENV} wins over it")
     parser.add_argument("--state-dir", metavar="PATH", help="override where the cursor, store and media live")
     parser.add_argument("--profile", default=DEFAULT_PROFILE, metavar="NAME", help="state under this profile name (default: %(default)s)")
+    parser.add_argument("--no-env-file", action="store_true",
+                        help="do not read ./.env; use only what the shell exported")
 
     sub = parser.add_subparsers(dest="command", metavar="<command>", required=True)
 
@@ -431,13 +435,54 @@ def build_parser():
     return parser
 
 
-def main(argv=None, env=None, session=None, sleep=None):
-    """`session` and `sleep` are for the check: a fake session stands in for the
-    network, and a fake sleep proves backoff without waiting."""
+# The variables the `env:` line reports: the ones .env.example documents, in its order.
+REPORTED = (TOKEN_ENV, *transcription.KEY_ENVS.values(), "XDG_STATE_HOME", "XDG_DATA_HOME", DEBUG_ENV)
+
+
+def _read_env_file(args, env, cwd):
+    """The environment with ./.env's gaps filled, and where each variable came from.
+
+    Called after argparse, so --help, --version and a usage error never read the
+    file. Everything printed is fixed text and names; a value, or a line of the
+    file, never is. Nothing prints unless ./.env supplied or shadowed a reported
+    name, so a run without one has exactly the stderr it always had.
+    """
+    values, skipped, problem = envfile.load(cwd)
+    if problem:
+        print(f"warning: {envfile.SHOWN} {problem}; ignored", file=sys.stderr, flush=True)
+    for number in skipped:
+        print(f"warning: {envfile.SHOWN} line {number} is not KEY=VALUE; skipped", file=sys.stderr, flush=True)
+    merged, sources = envfile.merge(env, values)
+    if args.token_file and sources.get(TOKEN_ENV) == envfile.DOTENV:
+        # A flag typed on this command line beats a file that happens to be in the
+        # directory; only a token exported in the shell still beats --token-file.
+        if TOKEN_ENV in env:
+            merged[TOKEN_ENV] = env[TOKEN_ENV]
+        else:
+            del merged[TOKEN_ENV]
+        sources[TOKEN_ENV] = envfile.OVERRIDDEN
+    names = [*REPORTED]
+    key_env = getattr(args, "key_env", None)
+    if key_env and key_env not in names:
+        names.append(key_env)
+    shown = [name for name in names if name in sources]
+    if any(sources[name] != envfile.SHELL for name in shown):
+        print("env: " + "; ".join(envfile.describe(name, sources[name]) for name in shown),
+              file=sys.stderr, flush=True)
+    return merged, sources
+
+
+def main(argv=None, env=None, session=None, sleep=None, cwd=None):
+    """`session`, `sleep` and `cwd` are for the check: a fake session stands in for
+    the network, a fake sleep proves backoff without waiting, and `cwd` is where
+    ./.env is looked for, so the check never reads the repository's own."""
     env = os.environ if env is None else env
     parser = build_parser()
     args = parser.parse_args(argv)
+    sources = None
     try:
+        if not args.no_env_file:
+            env, sources = _read_env_file(args, env, Path.cwd() if cwd is None else cwd)
         if args.func is _send:
             _send(args, env=env, session=session)
         elif args.func is _transcribe_command:
@@ -449,7 +494,7 @@ def main(argv=None, env=None, session=None, sleep=None):
         elif args.func is _recv:
             _recv(args, env=env, session=session, **({"sleep": sleep} if sleep else {}))
         elif args.func is _doctor:
-            _doctor(args, env=env, session=session)
+            _doctor(args, env=env, session=session, sources=sources)
         else:
             args.func(args)
     except WhatsAppError as exc:
@@ -461,11 +506,12 @@ def main(argv=None, env=None, session=None, sleep=None):
     return 0
 
 
-def _doctor(args, env=None, session=None):
+def _doctor(args, env=None, session=None, sources=None):
     """Print one line a check; fail with `doctor_failed` when any check does. Nothing
-    is created, written or polled — see wa_agent/doctor.py."""
+    is created, written or polled — see wa_agent/doctor.py. `sources` is None under
+    --no-env-file, which keeps every line exactly as it was before ./.env was read."""
     checks = doctor_checks.run_checks(token_file=args.token_file, state_dir_override=args.state_dir,
-                                      profile=args.profile, env=env, session=session)
+                                      profile=args.profile, env=env, session=session, sources=sources)
     for line in doctor_checks.render(checks):
         print(line)
     bad = doctor_checks.failed(checks)
