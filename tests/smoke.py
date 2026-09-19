@@ -809,6 +809,12 @@ for variable in (state.TOKEN_ENV, cli.DEBUG_ENV, "GEMINI_API_KEY", "XDG_STATE_HO
 assert "gitignored" in example and "source .env" in example, ".env.example must say how it is loaded"
 assert not re.search(r"^[A-Z_]+=\S", example, re.MULTILINE), ".env.example must never carry a value"
 
+# the table of contents lists every section, and every entry points at a real heading
+headings = [h for h in re.findall(r"^## (.+)$", readme, re.MULTILINE) if h != "Contents"]
+anchors = {re.sub(r"[^\w\- ]", "", h.lower()).replace(" ", "-") for h in headings}
+toc_links = re.findall(r"^- \[[^\]]+\]\(#([^)]+)\)", readme.split("## Contents", 1)[1].split("\n## ", 1)[0], re.MULTILINE)
+assert set(toc_links) == anchors, f"README contents and headings disagree: {set(toc_links) ^ anchors}"
+
 # nothing from a personal setup
 for leak in ("_hisab", "_loop", "/Users/", "vault", "VPS", "hamza.6"):
     assert leak.lower() not in readme.lower(), f"README leaks {leak!r}"

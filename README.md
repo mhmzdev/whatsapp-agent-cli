@@ -15,6 +15,19 @@ wa-agent send "deploy finished, 3 tests failing"
 
 It knows nothing about coding agents, folders, permissions or models. It moves messages.
 
+## Contents
+
+- [Install](#install)
+- [Get a token](#get-a-token)
+- [Use it](#use-it)
+- [Use it from Python](#use-it-from-python)
+- [Where it keeps things](#where-it-keeps-things)
+- [When something fails](#when-something-fails)
+- [Built on it: Hisab](#built-on-it-hisab)
+- [Coming next: the relay](#coming-next-the-relay)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Install
 
 ```bash
