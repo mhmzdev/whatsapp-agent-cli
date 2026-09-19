@@ -2,6 +2,26 @@
 
 Versions follow [SemVer](https://semver.org). Before `1.0.0` the API may still move; `1.0.0` comes once Hisab runs on this package and nothing had to change.
 
+## 0.3.0 — offline transcription
+
+**Transcription, offline**
+- `--provider local` transcribes on this machine with Whisper, through the opt-in extra: `pip install "wa-agent[local]"`. No key and no network once a model is downloaded. The default install does not pull it.
+- `wa-agent model pull [tiny|base|small]` is the only thing that ever downloads a model. It states the size first (`base`, the default, is about 150 MB), writes to a partial directory and renames only once every file is there. Models live under `$XDG_DATA_HOME/wa-agent/models` (else `~/.local/share/wa-agent/models`), shared across profiles, never in the working directory.
+- Nothing downloads during `recv`. `recv --transcribe --provider local` before `model pull` warns once, naming the fix, and delivers voice notes marked `transcribed: false`.
+- `recv --json` adds `"transcribed_by": "local:<size>"` to a locally transcribed note, and nothing to a Gemini or OpenRouter one.
+- **It is weak on Urdu and on mixed-language speech.** Whisper's small models turn those into confident, fluent, wrong English. It is never chosen for you: `local` is used only when you ask for it, never because a key is missing. English-only (`.en`) models are not offered for the same reason.
+
+**Doctor**
+- A new `local engine` line says whether the extra is installed and which models are downloaded. It makes no request and writes nothing.
+
+**Changed**
+- New exit code `16`, `local_not_ready`: the extra is not installed or the model is not downloaded. Not retryable. The line names the fix.
+- `PROVIDERS` now includes `local`. Library code that loops over `PROVIDERS` expecting a key for each should use the new `KEYED_PROVIDERS`.
+- `--key-env` with `--provider local` is refused as `bad_usage`: the local engine has no key.
+
+**Docs**
+- The README says what the package does differently, a table of guarantees each pinned by the check, and gives transcription its own section comparing the three providers.
+
 ## 0.2.0 — OpenRouter transcription, and `doctor`
 
 **Transcription**
