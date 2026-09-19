@@ -10,35 +10,49 @@ A relay that puts a coding agent in your pocket: a WhatsApp agent (Agent Platfor
 4. [`.agents/rules/`](.agents/rules/) — conventions, one file per topic, each with a `paths:` frontmatter naming its area. Claude Code loads them through the `.claude/rules` symlink.
    - [`privacy.md`](.agents/rules/privacy.md) — nothing from the author's own setup enters this repo
    - [`releases.md`](.agents/rules/releases.md) — `develop` is the trunk, landing on `main` publishes to PyPI
-5. The code, once there is some. Until the first spec is ticketed there is none; the language is an open question in the first brainstorm.
+5. The code, starting from the module the task names; `wa_agent/__init__.py` lists the names a dependent imports.
 
 Docs follow the Open Knowledge Format: markdown, a small YAML frontmatter with `type`, an `INDEX.md` per directory, plain links as the graph.
 
 ## Repo map
 
 ```
-README.md        the product definition — what the relay holds, in the order it exists today
+README.md        the product definition — what the relay holds, in the order it exists today; it is also the PyPI page
+CHANGELOG.md     what each release shipped; written in the bump PR, never in a feature PR
+Makefile         make help · dev · check · live · up · clean
+.env.example     every variable the code reads, explained inline (the check enforces the list)
 .github/workflows/  tests.yml (the check on every PR) and release.yml (main -> PyPI, tag, GitHub Release)
 scripts/         bump_version.py — the only way the version moves
 AGENTS.md        this file; CLAUDE.md imports it
 .agents/skills/  the lifecycle skills (.claude/skills is a symlink)
 .agents/rules/   conventions (.claude/rules is a symlink)
-docs/            brainstorm/, specs/, exec-plans/{backlog,active,completed,superseded}, INDEX.md at every level
+docs/            errors.md (every exit code and what to do about it), brainstorm/, specs/, exec-plans/{backlog,active,completed,superseded},
+                 feat-checklist/, INDEX.md at every level
 ```
 
 ```
 wa_agent/
   __init__.py    the package version, and the names a dependent imports
   errors.py      THE failure registry: every code, its message and its exit status; AuthError is permanent
-  state.py       where the token comes from (env, then --token-file) and where state lives (XDG, never the cwd)
-  cli.py         the argparse surface; subcommands stay stubs until their own ticket lands
+  state.py       where the token comes from (env, then --token-file), where state lives and where models live (XDG, never the cwd)
+  client.py      WhatsApp: the HTTP client — poll, typing, download, upload, send_media, send_iter/send, probe_token; every call
+                 paced by the rate limiter, retried once past a 429, and classified into a code
+  ratelimit.py   one rolling 60s window per platform method (messages, statuses, updates, media_post, media_get)
+  text.py        markdown → WhatsApp formatting, and splitting a long body into numbered parts under the cap
+  media.py       mime → extension, per-type size caps, image vs document
+  store.py       Store: the message log keyed by platform id, the poll cursor, the recorded creator
+  transcribe.py  voice notes → text: gemini and openrouter over plain HTTP, local through local.py; the provider is never guessed
+  local.py       the offline engine (the `local` extra, faster-whisper): `model pull`, readiness checks, never downloads mid-recv
+  doctor.py      `wa-agent doctor`: one line a check, never polls, never writes
+  cli.py         the argparse surface: send, recv, media get/put, transcribe, model pull, doctor, errors; failures leave through _fail
   __main__.py    python -m wa_agent
 tests/smoke.py   the check: no network, no token, no writes outside a temp dir
+tests/live.py    a real round trip against a real agent (make live); reads .env, so it is the owner's to run
 ```
 
 ## Not hisab-whatsapp
 
-The relay is where [`hisab-whatsapp`](https://github.com/mhmzdev/hisab-whatsapp) came from, but it is a different product: the user is a developer, there is no ledger, and there is no model API loop of its own. Do not reuse hisab's tool loop. Do reuse its transport knowledge (long-poll, dedup, rate limits, dead-token exit, chunking, transcription providers) — read hisab's `hisab/wa.py`, `hisab/store.py` and `hisab/transcribe.py` for the shape, and copy only through the privacy rule.
+The relay is where [`hisab-whatsapp`](https://github.com/mhmzdev/hisab-whatsapp) came from, but it is a different product: the user is a developer, there is no ledger, and there is no model API loop of its own. Do not reuse hisab's tool loop. Do reuse its transport knowledge (long-poll, dedup, rate limits, dead-token exit, chunking, transcription providers) — read hisab's `hisab/store.py` for the shape, and copy only through the privacy rule. Hisab itself now runs on this package: `hisab/wa.py` is its adapter, and the best example of a library consumer.
 
 ## Non-negotiables
 
@@ -54,7 +68,8 @@ The relay is where [`hisab-whatsapp`](https://github.com/mhmzdev/hisab-whatsapp)
 | What | Command |
 |---|---|
 | The check (run before calling anything done) | `python3 tests/smoke.py` |
-| Install for development | `pip install -e .` (add `[transcribe]` for the voice-note extra) |
+| Install for development | `make dev` (a `.venv` with this checkout installed), or `pip install -e .`; add `[local]` for offline transcription |
+| A live round trip against your own agent (reads `.env`; one poller per token) | `make live`, or `make up` for a live inbox |
 | Bump the version before a promote | `python3 scripts/bump_version.py patch\|minor\|major` |
 | Release | merge a promote PR `develop → main`; `release.yml` publishes to PyPI, tags `v<version>` and cuts the GitHub Release |
 
