@@ -49,7 +49,7 @@ def load_dotenv(path=ROOT / ".env"):
 def run(*args, env=None, check=False):
     """Run the CLI, echo what was run, return (status, stdout, stderr)."""
     cmd = [str(CLI), "--state-dir", str(STATE), *args]
-    print(f"{DIM}$ whatsapp-agent {' '.join(args)}{OFF}")
+    print(f"{DIM}$ whatsapp-agent {' '.join(_shown(a) for a in args)}{OFF}")
     proc = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, **(env or {})})
     for line in proc.stdout.splitlines():
         print(f"  {line}")
@@ -58,6 +58,15 @@ def run(*args, env=None, check=False):
     if check and proc.returncode != 0:
         print(f"{RED}  ↑ exited {proc.returncode}{OFF}")
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+
+def _shown(arg, limit=60):
+    """An argument as it should be echoed: quoted if it has spaces, and cut short if
+    it is long, so a 5,000-character message body does not bury the step it belongs to."""
+    flat = arg.replace("\n", " ")
+    if len(flat) > limit:
+        flat = f"{flat[:limit]}… ({len(arg)} chars)"
+    return f'"{flat}"' if " " in flat else flat
 
 
 def step(title):

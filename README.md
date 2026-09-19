@@ -63,12 +63,14 @@ A voice note keeps its shape and gains the words, so code that reads `text.body`
 
 Without a key, `recv --transcribe` warns once and delivers voice notes marked `transcribed: false` rather than stopping.
 
+`recv --download` fetches each photo, document and voice note into the state directory as it arrives and adds a `path` to the message. It is opt-in because it puts a fetch inside the delivery loop; a download that fails is delivered marked with `download_error`, never dropped. With `--transcribe` as well, a voice note is fetched once, kept, and transcribed from that copy.
+
 | Command | Does |
 |---|---|
 | `send <text>` | Send a message. Splits a long body on paragraph boundaries, numbers the parts `(i/n)`, converts markdown to WhatsApp formatting |
 | `send --file <path>` | Upload and attach. `--media <id>` attaches something already uploaded |
 | `send --dry-run` | Print exactly what would be sent, send nothing, need no token |
-| `recv` | Messages since the last run. `--json` for one object per line, `--follow` to stream, `--typing` to show a typing indicator while you work, `--transcribe` to add words to voice notes |
+| `recv` | Messages since the last run. `--json` for one object per line, `--follow` to stream, `--typing` to show a typing indicator while you work, `--transcribe` to add words to voice notes, `--download` to keep photos and files as they arrive |
 | `transcribe <file>` | Audio in, text out. Gemini today; offline is [#20](https://github.com/mhmzdev/whatsapp-agent-cli/issues/20) |
 | `media get <id>` | Download to the state directory, or `--out DIR`. Prints the path and nothing else |
 | `media put <path>` | Upload, print the media id |
@@ -131,7 +133,15 @@ Not yet: offline transcription ([#20](https://github.com/mhmzdev/whatsapp-agent-
 
 ## Contributing
 
-`develop` is the trunk and PRs target it; `main` is what is published. `python3 tests/smoke.py` is the check, and it runs with no network and no token. Conventions live in [`AGENTS.md`](AGENTS.md).
+```bash
+cp .env.example .env    # fill in your agent token, and a Gemini key if you want transcription
+make dev                # a virtualenv with this checkout installed
+make check              # the check: no network, no token, a couple of seconds
+make up                 # a live inbox: text your agent and watch it land, until Ctrl-C
+make live               # a scripted round trip: send, wait for your reply, read it back
+```
+
+`make up` and `make live` keep their state in `.live-state/`, never your real one, and `make clean` removes it. `develop` is the trunk and PRs target it; `main` is what is published. Conventions live in [`AGENTS.md`](AGENTS.md).
 
 ## License
 
