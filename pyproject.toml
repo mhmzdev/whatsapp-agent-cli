@@ -27,8 +27,11 @@ classifiers = [
 dependencies = ["requests>=2.32"]
 
 [project.optional-dependencies]
-# No extra for transcription: Gemini takes audio inline over plain HTTP, so the
-# requests dependency already covers it. Offline transcription will need one (#20).
+# Gemini and OpenRouter need no extra: they are plain HTTP, so the requests
+# dependency already covers them. `local` is offline Whisper: about 150 MB of
+# dependencies, so it is opt-in and the default install never pulls it. Its model is
+# a separate download, made by `wa-agent model pull`, never by installing this.
+local = ["faster-whisper>=1.2,<2"]
 dev = ["build", "twine"]
 
 [project.scripts]

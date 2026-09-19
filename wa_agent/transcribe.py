@@ -1,36 +1,44 @@
 """Voice notes to text.
 
-Two providers, both over plain HTTP, so this needs nothing but the `requests`
-the package already depends on — no provider SDK, and the whole path is
-drivable by the same injected fake session the rest of the package uses in its
-tests. Gemini takes the audio inline in a JSON request; OpenRouter takes it as a
-multipart upload to its transcription endpoint.
+Two providers over plain HTTP, so they need nothing but the `requests` the
+package already depends on — no provider SDK, and the whole path is drivable by the
+same injected fake session the rest of the package uses in its tests. Gemini takes
+the audio inline in a JSON request; OpenRouter takes it as a multipart upload to
+its transcription endpoint. A third, `local`, runs Whisper on this machine through
+the optional `faster-whisper` extra (see `local.py`): no key, no network, and a
+different failure mode, which is why it is never chosen for the caller.
 
 The provider is always the caller's choice, `gemini` unless told otherwise. It
-is never worked out from which key happens to be set: a key exported for
-something else must not be spent because it was lying in the environment.
+is never worked out from which key happens to be set, and never from which key is
+missing: a key exported for something else must not be spent because it was lying
+in the environment, and a weaker offline engine must not stand in for a provider
+whose key was forgotten.
 
 The key comes from the environment (the chosen provider's own variable by
 default), never from a config file and never from a flag, so it does not end up
-in a shell history or a process listing.
+in a shell history or a process listing. `local` has none.
 """
 
 import base64
 import os
 from pathlib import Path
 
+from . import local
 from .errors import WhatsAppError
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
 DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_KEY_ENV = "GEMINI_API_KEY"
-PROVIDERS = ("gemini", "openrouter")
+KEYED_PROVIDERS = ("gemini", "openrouter")
+PROVIDERS = KEYED_PROVIDERS + ("local",)
 
-# One row per provider: the variable its key is read from, and the model used when
-# the caller names none. OpenRouter's ids are namespaced by the model's maker.
+# One row per keyed provider: the variable its key is read from. `local` has no row on
+# purpose: it has no key, and a row of `None` would make every reader handle a hole.
 KEY_ENVS = {"gemini": DEFAULT_KEY_ENV, "openrouter": "OPENROUTER_API_KEY"}
-MODELS = {"gemini": DEFAULT_MODEL, "openrouter": "openai/whisper-1"}
+# The model used when the caller names none. OpenRouter's ids are namespaced by the
+# model's maker; for `local` it is a size (`tiny`, `base`, `small`).
+MODELS = {"gemini": DEFAULT_MODEL, "openrouter": "openai/whisper-1", "local": local.DEFAULT_SIZE}
 
 # Keep what was said, in the language it was said in. A transcript that quietly
 # translates is worse than no transcript: nobody can tell it happened.
@@ -60,8 +68,9 @@ def api_key(key_env=DEFAULT_KEY_ENV, env=None):
 
 
 def key_env_for(provider, override=None):
-    """The variable a provider's key is read from: the caller's `--key-env` if given."""
-    return override or KEY_ENVS[provider]
+    """The variable a provider's key is read from: the caller's `--key-env` if given.
+    `None` for a provider with no key."""
+    return override or KEY_ENVS.get(provider)
 
 
 def model_for(provider, override=None):
@@ -73,8 +82,18 @@ def check_provider(provider):
     rather than marking every voice note failed for the rest of a `--follow`."""
     if provider not in PROVIDERS:
         raise WhatsAppError("bad_usage",
-                            f"unknown transcription provider {provider!r}; this release has {', '.join(PROVIDERS)}"
-                            " (offline transcription is issue #20)")
+                            f"unknown transcription provider {provider!r}; this release has {', '.join(PROVIDERS)}")
+
+
+def check_usage(provider, key_env=None, model=None):
+    """Refuse a combination that can never work, before anything is polled or read.
+    `local` takes no key and a model that is a size; a mistake in either would
+    otherwise be reported once per voice note for as long as a `--follow` runs."""
+    check_provider(provider)
+    if provider == "local":
+        if key_env:
+            raise WhatsAppError("bad_usage", "--key-env does not apply to --provider local: it needs no key")
+        local.check_size(model_for(provider, model))
 
 
 def mime_for(path):
@@ -86,19 +105,24 @@ def transcribe(path, *, model=None, key_env=None, language=None,
     """Audio file in, text out. Raises a coded failure, never a partial transcript.
 
     `key_env` names the variable holding the key; left out, it is the provider's
-    own (`GEMINI_API_KEY`, `OPENROUTER_API_KEY`).
+    own (`GEMINI_API_KEY`, `OPENROUTER_API_KEY`). `local` has no key and refuses
+    one; its `model` is a size, and its model must already have been downloaded
+    (`wa-agent model pull`): a transcription never downloads.
 
     An empty answer is a failure, not an empty transcript: hisab learned that the
     hard way when a provider's error text was handed to a model as if it were
     something the user had said.
     """
-    check_provider(provider)
+    check_usage(provider, key_env, model)
     path = Path(path)
     if not path.is_file():
         raise WhatsAppError("bad_usage", f"{path} is not a file")
     mime = mime_for(path)
     if not mime:
         raise WhatsAppError("bad_usage", f"{path.suffix or 'that file'} is not an audio type this can read")
+
+    if provider == "local":
+        return _nonempty(local.run(path, model_for(provider, model), language, env=env))
 
     key_name = key_env_for(provider, key_env)
     key = api_key(key_name, env=env)

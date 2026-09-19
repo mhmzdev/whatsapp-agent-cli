@@ -22,7 +22,8 @@ Exit statuses, stable from here on — a script may switch on them:
     13  transcription_unavailable  the provider was unreachable; a retry may work
     14  transcription_failed  the provider answered but produced no usable transcript
     15  doctor_failed         `doctor` found at least one setup check failing
-    70  internal              anything unclassified (EX_SOFTWARE)
+    16  local_not_ready       the local engine is not installed, or its model is not downloaded
+    70 internal              anything unclassified (EX_SOFTWARE)
 
 The 6 / 7 split is the one a caller acts on: 7 is worth looping on, 6 never is.
 
@@ -53,6 +54,7 @@ CODES = {
     "transcription_unavailable": Error(13, "the transcription provider is unreachable right now; retrying may help", True),
     "transcription_failed": Error(14, "the transcription provider produced no usable transcript", False),
     "doctor_failed": Error(15, "one or more setup checks failed; each line above says what to do", False),
+    "local_not_ready": Error(16, "the local transcription engine is not ready; the detail line says what to install or download", False),
     "internal": Error(70, "something went wrong on this side", False),
 }
 

@@ -21,6 +21,7 @@ from pathlib import Path
 
 from . import __version__
 from . import doctor as doctor_checks
+from . import local as local_engine
 from . import media as media_types
 from . import transcribe as transcription
 from .client import WhatsApp
@@ -91,8 +92,11 @@ def _send(args, env=None, session=None):
 
 
 KEY_ENV_HELP = ("environment variable holding the key (default: the provider's own, "
-                + " or ".join(transcription.KEY_ENVS.values()) + ")")
-LANGUAGE_HELP = "hint the spoken language, e.g. urdu; with openrouter it is sent as given, so use the code the provider expects, e.g. ur"
+                + " or ".join(transcription.KEY_ENVS.values()) + "; not used by local)")
+LANGUAGE_HELP = ("hint the spoken language, e.g. urdu; with openrouter and local it is sent as given, "
+                 "so use the code the provider expects, e.g. ur")
+MODEL_HELP = ("model (default: per provider; with openrouter, an OpenRouter model id; with local, a size: "
+              + ", ".join(local_engine.SIZES) + ")")
 
 BACKOFF_START = 1
 BACKOFF_CAP = 60
@@ -152,6 +156,16 @@ def _deliver(message, store, client, as_json, typing):
 def _transcribe_command(args, env=None, session=None):
     print(transcription.transcribe(Path(args.path).expanduser(), model=args.model, key_env=args.key_env,
                                    language=args.language, provider=args.provider, session=session, env=env))
+    if args.provider == "local":
+        # stdout stays the transcript and nothing else. The caveat goes where a person
+        # reads it, because this engine's failure looks like a success.
+        engine = f"local:{transcription.model_for('local', args.model)}"
+        print(f"note: transcribed offline by {engine}; weak on Urdu and mixed-language speech",
+              file=sys.stderr, flush=True)
+
+
+def _model_command(args, env=None, session=None):
+    local_engine.pull(args.size, env=env)
 
 
 def _audio_of(message):
@@ -222,8 +236,15 @@ def _transcribe_into(message, client, args, env, session, tmp_root):
             return
     message.setdefault("text", {})["body"] = text
     message["transcribed"] = True
-    # One line per billed call, so an overnight --follow leaves a record of what it spent.
-    print(f"transcribed {message.get('id')}", file=sys.stderr, flush=True)
+    tag = ""
+    if args.provider == "local":
+        # Only the local engine is tagged: a consumer should weigh its words differently,
+        # and a message from a remote provider stays exactly the shape it always had.
+        engine = f"local:{transcription.model_for('local', args.transcribe_model)}"
+        message["transcribed_by"] = engine
+        tag = f" ({engine})"
+    # One line per call, so an overnight --follow leaves a record of what it did.
+    print(f"transcribed {message.get('id')}{tag}", file=sys.stderr, flush=True)
 
 
 def _sweep(directory, keep_hours, now=time.time):
@@ -271,14 +292,23 @@ def _recv(args, env=None, session=None, sleep=time.sleep):
         _sweep(directory, args.keep_hours)
 
     if args.transcribe:
-        # An unknown provider is refused before the first poll: left to the voice
-        # notes, it would mark every one of them failed for as long as --follow runs.
-        transcription.check_provider(args.provider)
-        key_name = transcription.key_env_for(args.provider, args.key_env)
-        if not transcription.api_key(key_name, env=env):
-            # Once, up front — not once per voice note, and not a reason to refuse to run.
-            print(f"warning: {key_name} is not set; voice notes will arrive untranscribed",
-                  file=sys.stderr, flush=True)
+        # A provider or a model that can never work is refused before the first poll: left
+        # to the voice notes, it would mark every one of them failed for as long as
+        # --follow runs.
+        transcription.check_usage(args.provider, args.key_env, args.transcribe_model)
+        if args.provider == "local":
+            # Once, up front, and not a reason to refuse to run. A model pulled from another
+            # terminal while this follows is picked up: every voice note checks again.
+            try:
+                local_engine.check_ready(transcription.model_for("local", args.transcribe_model), env)
+            except WhatsAppError as exc:
+                print(f"warning: local transcription is not ready ({exc.detail}); voice notes will arrive untranscribed",
+                      file=sys.stderr, flush=True)
+        else:
+            key_name = transcription.key_env_for(args.provider, args.key_env)
+            if not transcription.api_key(key_name, env=env):
+                print(f"warning: {key_name} is not set; voice notes will arrive untranscribed",
+                      file=sys.stderr, flush=True)
 
     backoff = BACKOFF_START
     replay = args.replay
@@ -345,11 +375,10 @@ def build_parser():
     p_recv = sub.add_parser("recv", help="read new messages since the stored cursor")
     p_recv.add_argument("--follow", action="store_true", help="hold the long-poll open and stream")
     p_recv.add_argument("--json", action="store_true", help="one JSON object per line")
-    p_recv.add_argument("--transcribe", action="store_true", help="add a transcript to each voice note (needs a transcription key)")
+    p_recv.add_argument("--transcribe", action="store_true", help="add a transcript to each voice note (needs a transcription key, or --provider local)")
     p_recv.add_argument("--provider", default="gemini", metavar="NAME",
                         help="transcription provider: " + ", ".join(transcription.PROVIDERS) + " (default: %(default)s)")
-    p_recv.add_argument("--transcribe-model", metavar="NAME", default=None,
-                        help="transcription model (default: per provider; with openrouter, an OpenRouter model id)")
+    p_recv.add_argument("--transcribe-model", metavar="NAME", default=None, help=MODEL_HELP)
     p_recv.add_argument("--key-env", metavar="NAME", default=None, help=KEY_ENV_HELP)
     p_recv.add_argument("--language", metavar="NAME", default=None, help=LANGUAGE_HELP)
     p_recv.add_argument("--typing", action="store_true", help="mark each delivered message read and show the typing indicator")
@@ -385,12 +414,19 @@ def build_parser():
     p_tr.add_argument("path")
     p_tr.add_argument("--provider", default="gemini", metavar="NAME",
                       help="transcription provider: " + ", ".join(transcription.PROVIDERS)
-                           + " (default: %(default)s; offline is issue #20)")
-    p_tr.add_argument("--model", metavar="NAME", default=None,
-                      help="model to use (default: per provider; with openrouter, an OpenRouter model id)")
+                           + " (default: %(default)s; local runs offline and needs the extra)")
+    p_tr.add_argument("--model", metavar="NAME", default=None, help=MODEL_HELP)
     p_tr.add_argument("--key-env", metavar="NAME", default=None, help=KEY_ENV_HELP)
     p_tr.add_argument("--language", metavar="NAME", default=None, help=LANGUAGE_HELP)
     p_tr.set_defaults(func=_transcribe_command)
+
+    p_model = sub.add_parser("model", help="download a local transcription model (never happens on its own)")
+    model_sub = p_model.add_subparsers(dest="model_command", metavar="<pull>", required=True)
+    p_pull = model_sub.add_parser("pull", help="download a Whisper model for --provider local; says its size first")
+    p_pull.add_argument("size", nargs="?", default=None, metavar="SIZE",
+                        help="one of " + ", ".join(f"{name} (~{mb} MB)" for name, mb in local_engine.SIZES.items())
+                             + f" (default: {local_engine.DEFAULT_SIZE})")
+    p_pull.set_defaults(func=_model_command)
 
     return parser
 
@@ -406,6 +442,8 @@ def main(argv=None, env=None, session=None, sleep=None):
             _send(args, env=env, session=session)
         elif args.func is _transcribe_command:
             _transcribe_command(args, env=env, session=session)
+        elif args.func is _model_command:
+            _model_command(args, env=env, session=session)
         elif args.func is _media:
             _media(args, env=env, session=session)
         elif args.func is _recv:

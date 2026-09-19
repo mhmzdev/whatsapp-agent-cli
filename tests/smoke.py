@@ -12,21 +12,24 @@ checkout as well as an installed package.
 
 import base64
 import contextlib
+import importlib.machinery
 import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import wa_agent  # noqa: E402
-from wa_agent import cli, client, doctor, errors, media, ratelimit, state, store, text, transcribe  # noqa: E402
+from wa_agent import cli, client, doctor, errors, local, media, ratelimit, state, store, text, transcribe  # noqa: E402
 
 # What must never reach a user's terminal: our internals, or a provider's raw words.
 # Provider *names* are deliberately allowed here, unlike in hisab: a developer who has
@@ -805,7 +808,7 @@ for extra in declared_extras - {"dev"}:
 example = (ROOT / ".env.example").read_text(encoding="utf-8")
 # literals, not imports: this list is the contract, and it must not quietly shrink
 # when a module that defines one of these names is refactored away
-for variable in (state.TOKEN_ENV, cli.DEBUG_ENV, "GEMINI_API_KEY", "OPENROUTER_API_KEY", "XDG_STATE_HOME"):
+for variable in (state.TOKEN_ENV, cli.DEBUG_ENV, "GEMINI_API_KEY", "OPENROUTER_API_KEY", "XDG_STATE_HOME", "XDG_DATA_HOME"):
     assert variable in example, f"{variable} is read by the code but missing from .env.example"
 assert "gitignored" in example and "source .env" in example, ".env.example must say how it is loaded"
 assert not re.search(r"^[A-Z_]+=\S", example, re.MULTILINE), ".env.example must never carry a value"
@@ -883,10 +886,10 @@ with tempfile.TemporaryDirectory() as tmp:
         except errors.WhatsAppError as exc:
             assert exc.code == "bad_usage", (why, exc.code)
     try:
-        transcribe.transcribe(note, provider="local", session=FakeSession([]), env={"GEMINI_API_KEY": "k"})
-        raise AssertionError("an unbuilt provider must be refused")
+        transcribe.transcribe(note, provider="whisper", session=FakeSession([]), env={"GEMINI_API_KEY": "k"})
+        raise AssertionError("an unknown provider must be refused")
     except errors.WhatsAppError as exc:
-        assert exc.code == "bad_usage" and "#20" in exc.detail, exc.detail
+        assert exc.code == "bad_usage" and "unknown transcription provider" in exc.detail, exc.detail
 
     status, out, err = run_cli(["transcribe", str(note)], env={"GEMINI_API_KEY": "k"}, session=FakeSession([gemini_ok("hello there")]))
     assert status == 0 and out == "hello there\n", (status, repr(out), err)
@@ -1022,10 +1025,9 @@ with tempfile.TemporaryDirectory() as tmp:
     assert status == 0 and out == "hello there\n" and err == "", (status, repr(out), err)
     status, out, err = run_cli(["transcribe", str(note), "--provider", "openrouter"], env={}, session=FakeSession([]))
     assert status == 12 and "error [no_transcription_key]:" in err and "detail: OPENROUTER_API_KEY is not set" in err, (status, err)
-    for provider in ("local", "openai"):
+    for provider in ("whisper", "openai"):
         status, out, err = run_cli(["transcribe", str(note), "--provider", provider], env={"GEMINI_API_KEY": "k"}, session=FakeSession([]))
         assert status == 2 and "error [bad_usage]:" in err, (provider, status, err)
-    assert "#20" in err
 
 # recv --transcribe --provider openrouter keeps the message's shape exactly as the Gemini path does
 with tempfile.TemporaryDirectory() as home:
@@ -1070,7 +1072,7 @@ with tempfile.TemporaryDirectory() as home:
 
     # an unknown provider is refused before anything is requested
     session = FakeSession([])
-    status, out, err = run_cli(["--state-dir", str(Path(home) / "u"), "recv", "--transcribe", "--provider", "local"], env=env, session=session)
+    status, out, err = run_cli(["--state-dir", str(Path(home) / "u"), "recv", "--transcribe", "--provider", "whisper"], env=env, session=session)
     assert status == 2 and "error [bad_usage]:" in err and session.calls == [], (status, err, session.calls)
 
 # no OpenAI provider, endpoint or key name anywhere the package ships or documents
@@ -1082,9 +1084,354 @@ for name, body in checked.items():
 assert "openai" not in transcribe.PROVIDERS and "openai" not in transcribe.KEY_ENVS, "OpenAI is not a provider"
 # An OpenRouter model id may start with openai/; the one place it lives is the MODELS constant.
 mentions = [(name, line.strip()) for name, body in checked.items() for line in body.splitlines() if "openai" in line.lower()]
-assert mentions == [("wa_agent/transcribe.py", 'MODELS = {"gemini": DEFAULT_MODEL, "openrouter": "openai/whisper-1"}')], \
+assert mentions == [("wa_agent/transcribe.py", 'MODELS = {"gemini": DEFAULT_MODEL, "openrouter": "openai/whisper-1", "local": local.DEFAULT_SIZE}')], \
     f"openai appears outside the MODELS constant: {mentions}"
 print("openrouter: request shape pinned, failures mapped as for Gemini, the provider never guessed from a key, a missing key names its own variable, recv keeps the message identical, and OpenAI is nowhere but a model id")
+
+# --------------------------------------------------------------------------- local transcription
+section("local transcription (library)")
+
+
+@contextlib.contextmanager
+def fake_faster_whisper(spoken=("hello there",), download_fails=False, download_skips=(), transcribe_raises=None, out=None):
+    """A stand-in for the `faster_whisper` package, signatures as read from 1.2.1's source.
+    The real one is never imported: the check must pass without the extra installed, and
+    must never be able to download a model. `log` records what the engine was asked."""
+    log = {"constructed": [], "transcribed": [], "downloads": [], "out_at_download": None}
+
+    class WhisperModel:
+        def __init__(self, model_size_or_path, device="auto", device_index=0, compute_type="default", **kwargs):
+            # the real one downloads anything that is not a directory; record whether it was one
+            log["constructed"].append({"path": model_size_or_path, "is_dir": os.path.isdir(model_size_or_path),
+                                       "device": device, "compute_type": compute_type})
+
+        def transcribe(self, audio, language=None, vad_filter=False, **kwargs):
+            log["transcribed"].append({"audio": audio, "language": language, "vad_filter": vad_filter})
+            if transcribe_raises:
+                raise transcribe_raises
+
+            def segments():   # a generator, as the real one: nothing happens until it is consumed
+                for piece in spoken:
+                    yield types.SimpleNamespace(text=piece)
+            return segments(), types.SimpleNamespace(language="en")
+
+    def download_model(size_or_id, output_dir=None, local_files_only=False, cache_dir=None, **kwargs):
+        log["downloads"].append({"size": size_or_id, "output_dir": output_dir})
+        log["out_at_download"] = out.getvalue() if out is not None else None
+        if download_fails:
+            raise ConnectionError("no route to host")
+        target = Path(output_dir)
+        target.mkdir(parents=True)
+        for name in local.NEEDED_FILES:
+            if name not in download_skips:
+                (target / name).write_bytes(b"x")
+        return str(target)
+
+    module = types.ModuleType("faster_whisper")
+    module.__spec__ = importlib.machinery.ModuleSpec("faster_whisper", None)
+    module.WhisperModel, module.download_model = WhisperModel, download_model
+    saved = sys.modules.get("faster_whisper", "absent")
+    sys.modules["faster_whisper"] = module
+    local._loaded.clear()
+    try:
+        yield log
+    finally:
+        local._loaded.clear()
+        if saved == "absent":
+            sys.modules.pop("faster_whisper", None)
+        else:
+            sys.modules["faster_whisper"] = saved
+
+
+@contextlib.contextmanager
+def no_faster_whisper():
+    """The default install: the extra is not there."""
+    saved = sys.modules.get("faster_whisper", "absent")
+    sys.modules["faster_whisper"] = None   # an import now raises ImportError, whatever is on disk
+    local._loaded.clear()
+    try:
+        yield
+    finally:
+        local._loaded.clear()
+        if saved == "absent":
+            sys.modules.pop("faster_whisper", None)
+        else:
+            sys.modules["faster_whisper"] = saved
+
+
+def expect(code, call, *needles):
+    try:
+        call()
+    except errors.WhatsAppError as exc:
+        assert exc.code == code, (code, exc.code, exc.detail)
+        for needle in needles:
+            assert needle in exc.detail, (needle, exc.detail)
+        return exc
+    raise AssertionError(f"expected {code}")
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    home = Path(tmp).resolve()
+    note = home / "note.ogg"
+    note.write_bytes(b"OggS-audio")
+    data = home / "data"
+    env = {"HOME": str(home), "XDG_DATA_HOME": str(data)}
+    guard = FakeSession([])   # any request at all would land here
+
+    # where models live: XDG data, else ~/.local/share, never the working directory
+    cwd = os.getcwd()
+    elsewhere = home / "elsewhere"
+    elsewhere.mkdir()
+    os.chdir(elsewhere)
+    try:
+        assert state.models_dir(env, create=False) == data / "wa-agent" / "models"
+        assert state.models_dir({"HOME": str(home)}, create=False) == home / ".local" / "share" / "wa-agent" / "models"
+        assert state.models_dir({"HOME": str(home), "XDG_DATA_HOME": "  "}, create=False) == home / ".local" / "share" / "wa-agent" / "models"
+        assert not data.exists() and not (home / ".local").exists(), "looking must not create"
+        assert state.models_dir(env) == data / "wa-agent" / "models" and (data / "wa-agent" / "models").is_dir()
+        assert elsewhere not in state.models_dir({"HOME": str(home)}, create=False).parents, "not derived from the cwd"
+        assert not any(elsewhere.iterdir()), "resolving a models directory wrote into the cwd"
+    finally:
+        os.chdir(cwd)
+    shutil.rmtree(data)
+
+    # the default install: no extra. Asking for local is local_not_ready with the fix, and nothing is created
+    with no_faster_whisper():
+        assert local.extra_installed() is False
+        expect("local_not_ready", lambda: transcribe.transcribe(note, provider="local", session=guard, env=env),
+               'pip install "wa-agent[local]"')
+        expect("local_not_ready", lambda: local.pull("base", env=env, out=io.StringIO()), 'pip install "wa-agent[local]"')
+    assert not data.exists(), "a refused pull or transcription created a directory"
+    assert errors.CODES["local_not_ready"].exit_status == 16 and errors.CODES["local_not_ready"].retry is False
+
+    out = io.StringIO()
+    with fake_faster_whisper(out=out) as log:
+        assert local.extra_installed() is True
+        # installed but no model: refused with the command that fixes it, and the engine is never built or asked to download
+        expect("local_not_ready", lambda: transcribe.transcribe(note, provider="local", session=guard, env=env),
+               "wa-agent model pull base")
+        assert log["constructed"] == [] and log["downloads"] == [], "a transcription must never download or build an engine without a model"
+        assert not data.exists(), "a refused transcription created a directory"
+
+        # a directory that is missing the tokenizer is not a model: the engine would fetch one from the network
+        broken = state.models_dir(env) / "base"
+        broken.mkdir()
+        for name in ("model.bin", "config.json"):
+            (broken / name).write_bytes(b"x")
+        assert local.is_ready("base", env) is False and local.installed_sizes(env) == []
+        expect("local_not_ready", lambda: transcribe.transcribe(note, provider="local", session=guard, env=env), "model pull")
+        assert log["constructed"] == [], "an unready directory must never reach the engine"
+        shutil.rmtree(broken)
+
+        # the download: the size is said first, into .partial, then renamed into place
+        (state.models_dir(env) / "base.partial").mkdir()   # what a dead earlier attempt leaves
+        where = local.pull("base", env=env, out=out)
+        assert where == state.models_dir(env) / "base" and local.is_ready("base", env) and local.installed_sizes(env) == ["base"]
+        assert log["out_at_download"].startswith('downloading the "base" Whisper model, about 150 MB, to '), log["out_at_download"]
+        assert log["downloads"][0]["output_dir"].endswith("base.partial") and log["downloads"][0]["size"] == "base"
+        assert not (state.models_dir(env) / "base.partial").exists(), "the partial directory is renamed away"
+        assert out.getvalue().rstrip().endswith(f"done: {where}")
+        again = io.StringIO()
+        local.pull("base", env=env, out=again)
+        assert "already downloaded" in again.getvalue() and len(log["downloads"]) == 1, "a present model downloads nothing"
+
+        # transcribing: plain str, no key, no request, built from the directory, the silence filter on
+        got = transcribe.transcribe(note, provider="local", session=guard, env=env)
+        assert got == "hello there" and type(got) is str, (got, type(got))
+        assert guard.calls == [], "the local engine makes no request"
+        (built,) = log["constructed"]
+        assert built == {"path": str(where), "is_dir": True, "device": "cpu", "compute_type": "int8"}, built
+        assert log["transcribed"] == [{"audio": str(note), "language": None, "vad_filter": True}], log["transcribed"]
+        transcribe.transcribe(note, provider="local", language="ur", session=guard, env=env)
+        assert len(log["constructed"]) == 1, "the model is loaded once per process, not per voice note"
+        assert log["transcribed"][-1]["language"] == "ur", "--language is passed through as given"
+
+        # a size that is not on disk is not ready, even when another is
+        expect("local_not_ready", lambda: transcribe.transcribe(note, provider="local", model="small", session=guard, env=env),
+               "wa-agent model pull small")
+        local.pull("tiny", env=env, out=again)
+        assert "about 75 MB" in again.getvalue()
+        assert transcribe.transcribe(note, provider="local", model="tiny", session=guard, env=env) == "hello there"
+        assert len(log["constructed"]) == 2
+
+        # a mistake in the arguments is bad_usage, before the file or the engine is looked at
+        expect("bad_usage", lambda: transcribe.transcribe(note, provider="local", model="medium", session=guard, env=env), "tiny, base, small")
+        expect("bad_usage", lambda: transcribe.transcribe(note, provider="local", model="base.en", session=guard, env=env), "tiny, base, small")
+        expect("bad_usage", lambda: local.pull("large-v3", env=env, out=again), "tiny, base, small")
+        expect("bad_usage", lambda: transcribe.transcribe(note, provider="local", key_env="MY_KEY", session=guard, env={**env, "MY_KEY": "k"}),
+               "--key-env")
+
+        # local is never chosen by absence: no provider named and no key set is still exit 12, with the extra and a model both present
+        expect("no_transcription_key", lambda: transcribe.transcribe(note, session=guard, env=env), "GEMINI_API_KEY")
+        assert guard.calls == []
+
+    # segments are joined, blanks dropped; nothing said is a failure, not an empty transcript
+    with fake_faster_whisper(spoken=(" first ", "", "  ", "second")) as log:
+        assert transcribe.transcribe(note, provider="local", session=guard, env=env) == "first second"
+    for silence in ((), ("", "   ")):
+        with fake_faster_whisper(spoken=silence):
+            expect("transcription_failed", lambda: transcribe.transcribe(note, provider="local", session=guard, env=env), "empty")
+    # an engine that falls over is a coded failure, with the reason for the operator and none in the message
+    with fake_faster_whisper(transcribe_raises=RuntimeError("decoder blew up")):
+        exc = expect("transcription_failed", lambda: transcribe.transcribe(note, provider="local", session=guard, env=env), "decoder blew up")
+        assert "decoder" not in exc.message
+    # a failed download exits 13 and leaves nothing that looks like a model
+    fresh = {"HOME": str(home), "XDG_DATA_HOME": str(home / "data2")}
+    with fake_faster_whisper(download_fails=True):
+        expect("transcription_unavailable", lambda: local.pull("small", env=fresh, out=io.StringIO()), "no route to host")
+        assert not (state.models_dir(fresh, create=False) / "small").exists() and not (state.models_dir(fresh, create=False) / "small.partial").exists()
+        assert errors.CODES["transcription_unavailable"].retry is True
+    with fake_faster_whisper(download_skips=("tokenizer.json",)):
+        expect("transcription_unavailable", lambda: local.pull("small", env=fresh, out=io.StringIO()), "tokenizer.json")
+        assert local.is_ready("small", fresh) is False and not (state.models_dir(fresh, create=False) / "small.partial").exists()
+
+print("local (library): the model comes from XDG data and never the cwd; without the extra, or a model, it is local_not_ready naming the fix and builds nothing; "
+      "a pull says its size first, goes through .partial, and a failed one leaves nothing ready; a transcription is a plain str, keyless, offline, loaded once, silence-filtered; "
+      "sizes are tiny, base and small; --key-env is refused; and no provider named is still exit 12")
+
+section("local transcription (command line)")
+with tempfile.TemporaryDirectory() as tmp:
+    home = Path(tmp).resolve()
+    note = home / "note.ogg"
+    note.write_bytes(b"OggS-audio")
+    env = {"HOME": str(home), "XDG_DATA_HOME": str(home / "data"), state.TOKEN_ENV: "secret-token"}
+    guard = FakeSession([])
+
+    # the two commands with the extra absent: both say how to install it, neither makes a directory
+    with no_faster_whisper():
+        for argv in (["model", "pull"], ["transcribe", str(note), "--provider", "local"]):
+            status, out, err = run_cli(argv, env=env, session=guard)
+            assert status == 16 and "error [local_not_ready]:" in err and 'pip install "wa-agent[local]"' in err, (argv, status, err)
+            assert out == "", "nothing on stdout for a failure"
+    assert not (home / "data").exists()
+
+    with fake_faster_whisper() as log:
+        # `model pull`: the size first, on stderr, nothing on stdout, and only when asked
+        status, out, err = run_cli(["model", "pull"], env=env, session=guard)
+        assert status == 0 and out == "", (status, out, err)
+        assert err.startswith('downloading the "base" Whisper model, about 150 MB, to '), err
+        assert local.is_ready("base", env) and len(log["downloads"]) == 1
+        status, out, err = run_cli(["model", "pull", "tiny"], env=env, session=guard)
+        assert status == 0 and 'the "tiny" Whisper model, about 75 MB' in err, err
+        status, out, err = run_cli(["model", "pull", "tiny"], env=env, session=guard)
+        assert status == 0 and "already downloaded" in err and len(log["downloads"]) == 2
+        for bad in ("medium", "base.en", "large-v3"):
+            status, out, err = run_cli(["model", "pull", bad], env=env, session=guard)
+            assert status == 2 and "error [bad_usage]:" in err and "tiny, base, small" in err, (bad, status, err)
+        assert len(log["downloads"]) == 2, "a refused size downloads nothing"
+        assert "model" in run_cli(["--help"])[1] and "tiny" in run_cli(["model", "pull", "--help"])[1]
+
+        # `transcribe --provider local`: stdout is the transcript, and the caveat is on stderr
+        status, out, err = run_cli(["transcribe", str(note), "--provider", "local"], env=env, session=guard)
+        assert status == 0 and out == "hello there\n", (status, repr(out), err)
+        assert err == "note: transcribed offline by local:base; weak on Urdu and mixed-language speech\n", repr(err)
+        status, out, err = run_cli(["transcribe", str(note), "--provider", "local", "--model", "tiny", "--language", "ur"], env=env, session=guard)
+        assert status == 0 and "local:tiny" in err and log["transcribed"][-1]["language"] == "ur", (status, err)
+        status, out, err = run_cli(["transcribe", str(note), "--provider", "local", "--model", "small"], env=env, session=guard)
+        assert status == 16 and "wa-agent model pull small" in err and out == "", (status, err)
+        status, out, err = run_cli(["transcribe", str(note), "--provider", "local", "--key-env", "K"], env=env, session=guard)
+        assert status == 2 and "--key-env" in err, (status, err)
+        status, out, err = run_cli(["transcribe", str(note)], env={**env, "HOME": str(home)}, session=guard)
+        assert status == 12 and "GEMINI_API_KEY" in err, "local is never chosen because a key is missing"
+        assert guard.calls == [] and len(log["downloads"]) == 2
+
+    # recv --transcribe --provider local
+    def voice():
+        """A fresh message every time: recv folds the words into the dict it is given, so a
+        shared one would carry the last run's tag into the next."""
+        return msg("wamid.V", kind="audio", voice=True)
+
+    meta = FakeResponse(200, {"url": "https://lookaside.example/v", "mime_type": "audio/ogg"})
+    gem_text = FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": "hello there"}]}}]})
+
+    def recv_local(sub, extra, responses, run_env=env):
+        sdir = str(home / sub)
+        session = FakeSession(responses)
+        return sdir, session, run_cli(["--state-dir", sdir, "recv", "--json", "--transcribe", *extra], env=run_env, session=session)
+
+    with fake_faster_whisper() as log:
+        local.pull("base", env=env, out=io.StringIO())
+        log["downloads"].clear()
+        sdir, session, (status, out, err) = recv_local("l", ["--provider", "local"], [envelope(voice()), meta, FakeBytes(200, b"OggS-audio")])
+        assert status == 0, (status, err)
+        heard = json.loads(out.strip())
+        assert heard["transcribed"] is True and heard["transcribed_by"] == "local:base" and heard["text"]["body"] == "hello there", heard
+        assert heard["type"] == "audio" and heard["audio"]["id"] == "media-wamid.V", "the message keeps its shape"
+        assert store.Store(sdir).lookup("wamid.V") == "hello there", "the store records the words"
+        assert "transcribed wamid.V (local:base)" in err
+        assert not [p for p in Path(sdir).resolve().rglob("*.ogg")], "the audio is not kept"
+        assert not [c for c in session.calls if "googleapis" in c["url"] or "openrouter" in c["url"]], "no provider was called"
+        assert log["downloads"] == [], "nothing downloads during recv"
+        # apart from the tag, it is the message the Gemini path produces
+        _, _, (status, out_g, err_g) = recv_local("g", [], [envelope(voice()), meta, FakeBytes(200, b"OggS-audio"), gem_text],
+                                                  run_env={**env, "GEMINI_API_KEY": "gem-key"})
+        via_gemini = json.loads(out_g.strip())
+        assert {k: v for k, v in heard.items() if k != "transcribed_by"} == via_gemini, (heard, via_gemini, err_g)
+        _, _, (status, out_o, err_o) = recv_local("o", ["--provider", "openrouter"], [envelope(voice()), meta, FakeBytes(200, b"OggS-audio"), FakeResponse(200, {"text": "hello there"})],
+                                                  run_env={**env, "OPENROUTER_API_KEY": "or-key"})
+        assert "transcribed_by" not in out_g and "transcribed_by" not in out_o, "a remote transcript carries no tag: its lines are unchanged"
+        assert "(" not in err_g and "(" not in err_o, "and neither does its stderr line"
+
+        # a size that is not on disk: one warning up front naming the fix, the message delivered marked, nothing downloaded
+        sdir, session, (status, out, err) = recv_local("m", ["--provider", "local", "--transcribe-model", "small"],
+                                                        [envelope(msg("wamid.M", kind="audio"), next_offset="off-m"), meta, FakeBytes(200, b"OggS")])
+        assert status == 0, (status, err)
+        assert err.count("warning: local transcription is not ready") == 1 and "wa-agent model pull small" in err, err
+        marked = json.loads(out.strip())
+        assert marked["transcribed"] is False and marked["transcription_error"] == "local_not_ready", marked
+        assert "text" not in marked and "transcribed_by" not in marked, "a failed transcription invents no words and claims no engine"
+        assert store.Store(sdir).offset() == "off-m", "the batch still completed"
+        assert log["downloads"] == [], "recv never downloads, not even to be helpful"
+
+        # arguments that can never work are refused before a single poll
+        for extra, needle in ((["--provider", "local", "--key-env", "K"], "--key-env"),
+                              (["--provider", "local", "--transcribe-model", "medium"], "tiny, base, small")):
+            session = FakeSession([])
+            status, out, err = run_cli(["--state-dir", str(home / "r"), "recv", "--transcribe", *extra], env=env, session=session)
+            assert status == 2 and "error [bad_usage]:" in err and needle in err and session.calls == [], (extra, status, err)
+
+    # without the extra: one warning naming the install, messages still delivered
+    with no_faster_whisper():
+        sdir, session, (status, out, err) = recv_local("x", ["--provider", "local"], [envelope(msg("wamid.X", kind="audio")), meta, FakeBytes(200, b"OggS")])
+        assert status == 0 and err.count("pip install") == 1, (status, err)
+        assert json.loads(out.strip())["transcription_error"] == "local_not_ready"
+print("local (command line): model pull says its size on stderr and downloads nothing it was not asked to; transcribe prints the transcript and a caveat on stderr; "
+      "recv tags a local transcript with its engine and leaves every remote line untouched; a missing model or extra warns once and delivers the message marked; never a download during recv")
+
+section("local transcription (default install, and the docs)")
+# the default install does not pull the engine: it is in an extra and nowhere else
+deps_body = raw.split("dependencies = [", 1)[1].split("]", 1)[0]
+required = re.findall(r'"([^"]+)"', deps_body)
+assert [re.split(r"[<>=!~ ]", name)[0] for name in required] == ["requests"], f"the default install must stay one dependency: {required}"
+extras_body = raw.split("[project.optional-dependencies]", 1)[1].split("\n[", 1)[0]
+extra_lines = {m.group(1): m.group(2) for m in re.finditer(r"^([a-z]+)\s*=\s*\[([^\]]*)\]", extras_body, re.MULTILINE)}
+assert "faster-whisper" in extra_lines["local"], "the local extra carries the engine"
+assert set(extra_lines) == {"local", "dev"} and "faster-whisper" not in extra_lines["dev"], extra_lines
+for heavy in ("faster-whisper", "faster_whisper", "ctranslate2", "onnxruntime", "huggingface"):
+    assert heavy not in deps_body, f"{heavy} is in the default dependencies"
+
+# and importing every module of the package, and looking for the extra, never imports it
+probe = ("import sys\n"
+         "import wa_agent, wa_agent.cli, wa_agent.transcribe, wa_agent.local, wa_agent.doctor\n"
+         "from wa_agent import doctor, local\n"
+         "env = {'HOME': '/nonexistent'}\n"
+         "doctor.check_local(env); local.extra_installed(); local.installed_sizes(env)\n"
+         "assert 'faster_whisper' not in sys.modules, 'the engine was imported'\n")
+proc = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT,
+                      env={**os.environ, "PYTHONPATH": str(ROOT)})
+assert proc.returncode == 0, proc.stderr
+
+# the docs say plainly what the engine is bad at, and how to get it
+readme_text = (ROOT / "README.md").read_text(encoding="utf-8")
+errors_text = (ROOT / "docs" / "errors.md").read_text(encoding="utf-8")
+for name, body in (("README.md", readme_text), ("docs/errors.md", errors_text)):
+    assert "Urdu" in body and "Roman Urdu" in body and "switch" in body, f"{name} must say the local engine is weak on Urdu and code-switching"
+    assert "confident" in body, f"{name} must say the failure looks like success"
+    assert ".en" in body, f"{name} must say why there is no English-only model"
+assert 'pip install "wa-agent[local]"' in readme_text and "wa-agent model pull" in readme_text
+assert "never chosen for you" in readme_text and "Nothing downloads during `recv`" in readme_text
+assert "transcribed_by" in readme_text and "transcribed_by" in errors_text
+print("the default install is one dependency and never imports the engine; the extra carries it; README and errors.md say plainly that it is weak on Urdu and code-switching")
 
 # --------------------------------------------------------------------------- recv --download
 section("recv --download")
@@ -1189,7 +1536,7 @@ def doctor_lines(out):
         else:
             label, _, rest = line.partition(" ")
             rest = rest.lstrip()
-            for name in ("python", "token", "gemini key", "openrouter key", "state dir", "creator"):
+            for name in ("python", "token", "gemini key", "openrouter key", "local engine", "state dir", "creator"):
                 if rest.startswith(name):
                     checks.append((label, name, rest[len(name):].strip()))
                     break
@@ -1198,7 +1545,7 @@ def doctor_lines(out):
     return checks, dict(fixes)
 
 
-DOC_ORDER = ["python", "token", "gemini key", "openrouter key", "state dir", "creator"]
+DOC_ORDER = ["python", "token", "gemini key", "openrouter key", "local engine", "state dir", "creator"]
 GOOD_WA, GOOD_KEY = FakeResponse(404, {"error": {"code": 33}}), FakeResponse(200, {"data": {}})
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -1228,14 +1575,15 @@ with tempfile.TemporaryDirectory() as tmp:
         assert "Traceback" not in out
         return status, out, err
 
-    # 1. all good: six lines in order, nothing failing, exit 0, exactly one call each
+    # 1. all good: seven lines in order, nothing failing, exit 0, exactly one call each
+    #    (the local engine line is `optional` here: this environment has no extra)
     session = DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY)
     before = snapshot(tmp)
     status, out, err = run_doctor(session)
     assert status == 0, (out, err)
     checks, fixes = doctor_lines(out)
     assert [c[1] for c in checks] == DOC_ORDER, checks
-    assert [c[0] for c in checks] == ["ok"] * 6, checks
+    assert [c[0] for c in checks] == ["ok", "ok", "ok", "ok", "optional", "ok", "ok"], checks
     assert not fixes and "FAIL" not in out
     assert snapshot(tmp) == before, "doctor wrote something"
 
@@ -1254,7 +1602,7 @@ with tempfile.TemporaryDirectory() as tmp:
         for spend in ("generateContent", "audio/transcriptions", "/chat", "/completions"):
             assert spend not in call["url"], f"a key probe touched a paid endpoint: {call['url']}"
         assert not any(secret in call["url"] for secret in DOC_SECRETS)
-    print("all good: six ok lines in order; one GET a probe on metadata endpoints, credentials in headers, no /updates, nothing written")
+    print("all good: seven lines in order (the local engine optional without its extra); one GET a probe on metadata endpoints, credentials in headers, no /updates, nothing written")
 
     # --key-env is gone: two keys made it ambiguous, and a diagnostic does not need it
     status, out, err = run_cli(["doctor", "--key-env", "X"], env={"HOME": str(home)}, session=DoctorSession())
@@ -1272,7 +1620,7 @@ with tempfile.TemporaryDirectory() as tmp:
         assert token_line[0] == "FAIL" and "rejected" in token_line[2] and "accepted" not in token_line[2], token_line
         assert "fresh token" in fixes[1], fixes
         assert err.startswith("error [doctor_failed]:"), err
-        assert "1 of 6 checks failed" in err
+        assert "1 of 7 checks failed" in err
     print("a dead token (401, and 400 with error.code 100) fails the token line with a fresh-token fix, exit 15")
 
     # 3. could not verify: FAIL saying so, and never claiming the token is good
@@ -1356,7 +1704,7 @@ with tempfile.TemporaryDirectory() as tmp:
             line = checks[case["index"]]
             assert status == 15 and line[0] == "FAIL", (provider, code, out)
             assert case["var"] in fixes[case["index"]], fixes
-            assert [c[0] for i, c in enumerate(checks) if i != case["index"]] == ["ok"] * 5, checks
+            assert [c[0] for i, c in enumerate(checks) if i != case["index"] and c[1] != "local engine"] == ["ok"] * 5, checks
         # cannot verify: never FAIL, never "ok", exit stays 0 — an optional feature's hiccup must not fail a script
         for unclear in (FakeResponse(503), FakeResponse(429), FakeResponse(500), FakeResponse(404),
                         FakeTransportError(f"timed out talking to a host {DOC_GEMINI} {DOC_OPENROUTER}")):
@@ -1371,7 +1719,7 @@ with tempfile.TemporaryDirectory() as tmp:
     session = DoctorSession(wa=GOOD_WA)
     status, out, err = run_doctor(session, gemini=None, openrouter=None)
     checks = doctor_lines(out)[0]
-    assert status == 0 and [c[0] for c in checks] == ["ok", "ok", "optional", "optional", "ok", "ok"], out
+    assert status == 0 and [c[0] for c in checks] == ["ok", "ok", "optional", "optional", "optional", "ok", "ok"], out
     assert len(session.calls) == 1, "with no keys, the only request is the token probe"
     print("no keys at all: two optional lines and exit 0")
 
@@ -1404,8 +1752,8 @@ with tempfile.TemporaryDirectory() as tmp:
     before = snapshot(tmp)
     status, out, err = run_doctor(session, state=fresh)
     checks, fixes = doctor_lines(out)
-    assert checks[4][0] == "ok" and "does not exist yet" in checks[4][2], checks[4]
-    assert checks[5][0] == "FAIL" and "recv" in fixes[5], (checks[5], fixes)     # no creator in a state dir that is not there
+    assert checks[5][0] == "ok" and "does not exist yet" in checks[5][2], checks[5]
+    assert checks[6][0] == "FAIL" and "recv" in fixes[6], (checks[6], fixes)     # no creator in a state dir that is not there
     assert status == 15
     assert not fresh.exists() and not fresh.parent.exists(), "doctor created the state directory"
     assert snapshot(tmp) == before, "doctor changed the tree"
@@ -1416,8 +1764,8 @@ with tempfile.TemporaryDirectory() as tmp:
     before = snapshot(tmp)
     status, out, err = run_doctor(DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY), state=empty)
     checks, fixes = doctor_lines(out)
-    assert checks[4][0] == "ok" and "writable" in checks[4][2] and checks[5][0] == "FAIL", checks
-    assert "recv" in fixes[5] and "--to" in fixes[5]
+    assert checks[5][0] == "ok" and "writable" in checks[5][2] and checks[6][0] == "FAIL", checks
+    assert "recv" in fixes[6] and "--to" in fixes[6]
     assert snapshot(tmp) == before, "doctor wrote into the state directory"
 
     # a file where the directory should be
@@ -1425,14 +1773,14 @@ with tempfile.TemporaryDirectory() as tmp:
     blocker.write_text("not a directory")
     status, out, err = run_doctor(DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY), state=blocker)
     checks, fixes = doctor_lines(out)
-    assert checks[4][0] == "FAIL" and "not a directory" in checks[4][2] and 4 in fixes, checks
+    assert checks[5][0] == "FAIL" and "not a directory" in checks[5][2] and 5 in fixes, checks
     assert blocker.read_text() == "not a directory"
 
     # a profile that is not a name: a FAIL line, not a traceback, and the rest still reports
     status, out, err = run_doctor(DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY),
                                   extra=["--profile", "a/b"], argv_state=False)
     checks, fixes = doctor_lines(out)
-    assert status == 15 and checks[4][0] == "FAIL" and checks[5][0] == "FAIL" and checks[1][0] == "ok", out
+    assert status == 15 and checks[5][0] == "FAIL" and checks[6][0] == "FAIL" and checks[1][0] == "ok", out
     assert "Traceback" not in err
 
     # unwritable places are only testable off root (root writes anywhere)
@@ -1447,8 +1795,8 @@ with tempfile.TemporaryDirectory() as tmp:
                 before = snapshot(tmp)
                 status, out, err = run_doctor(DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY), state=target)
                 checks, fixes = doctor_lines(out)
-                assert status == 15 and checks[4][0] == "FAIL" and want in checks[4][2], (target, checks[4])
-                assert 4 in fixes
+                assert status == 15 and checks[5][0] == "FAIL" and want in checks[5][2], (target, checks[5])
+                assert 5 in fixes
                 assert snapshot(tmp) == before
         finally:
             (locked_parent / "existing").chmod(0o700)
@@ -1459,7 +1807,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     # the creator, recorded, is a passing line
     status, out, err = run_doctor(DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY))
-    assert doctor_lines(out)[0][5][0] == "ok"
+    assert doctor_lines(out)[0][6][0] == "ok"
 
     # 7. the secrets never appear, in any of the scenarios' shapes, with or without debug
     def shape(n):
@@ -1491,10 +1839,53 @@ with tempfile.TemporaryDirectory() as tmp:
     print(f"python floor {doctor.MIN_PYTHON} agrees with requires-python; an older interpreter fails the first line")
 
     # every transcription provider has a key probe, and the variable each is read from is transcribe's own
-    assert set(doctor.KEY_PROBES) == set(transcribe.PROVIDERS)
-    for provider in transcribe.PROVIDERS:
+    assert set(doctor.KEY_PROBES) == set(transcribe.KEYED_PROVIDERS) == set(transcribe.KEY_ENVS)
+    for provider in transcribe.KEYED_PROVIDERS:
         assert transcribe.KEY_ENVS[provider] in doctor.check_key(provider, env={}).message
     print("every transcription provider has a key probe, read from the variable transcribe names")
+
+    # `local` is the one provider with no key, so it has no probe and no key line; it has its own line instead
+    assert set(transcribe.PROVIDERS) - set(doctor.KEY_PROBES) == {"local"} and "local" not in transcribe.KEY_ENVS
+    assert transcribe.key_env_for("local") is None and transcribe.KEYED_PROVIDERS == ("gemini", "openrouter")
+
+    # the local engine line: optional until it could run, ok when it could, never FAIL, and it does nothing but look
+    denv = {"HOME": str(home)}
+    models = home / ".local" / "share" / "wa-agent" / "models"
+    before = snapshot(tmp)
+    with no_faster_whisper():
+        line = doctor.check_local(denv)
+        assert line.status == "optional" and line.name == "local engine" and 'pip install "wa-agent[local]"' in line.message and line.fix == "", line
+    with fake_faster_whisper() as log:
+        line = doctor.check_local(denv)
+        assert line.status == "optional" and "no model is downloaded" in line.message and "wa-agent model pull" in line.message, line
+        assert not models.exists(), "looking for models created a directory"
+        (models / "base.partial").mkdir(parents=True)
+        for name in local.NEEDED_FILES:
+            (models / "base.partial" / name).write_bytes(b"x")
+        assert doctor.check_local(denv).status == "optional", "a half-finished download is not a model"
+        (models / "small").mkdir()
+        (models / "small" / "model.bin").write_bytes(b"x")
+        assert doctor.check_local(denv).status == "optional", "a directory without every file is not a model"
+        assert log["constructed"] == [] and log["downloads"] == [] and log["transcribed"] == [], "doctor built an engine or downloaded"
+    shutil.rmtree(home / ".local")
+    assert snapshot(tmp) == before, "the local engine line wrote something"
+    with fake_faster_whisper() as log:
+        local.pull("base", env=denv, out=io.StringIO())
+        local.pull("tiny", env=denv, out=io.StringIO())
+        log["downloads"].clear()
+        after_pull = snapshot(tmp)
+        line = doctor.check_local(denv)
+        assert line.status == "ok" and "tiny, base" in line.message and str(models) in line.message and line.fix == "", line
+        session = DoctorSession(wa=GOOD_WA, gemini=None, openrouter=None)
+        status, out, err = run_doctor(session, gemini=None, openrouter=None)
+        checks, fixes = doctor_lines(out)
+        assert status == 0 and checks[4][:2] == ("ok", "local engine") and not fixes, out
+        assert session.to(GEMINI_HOST) == [] and session.to(OPENROUTER_HOST) == [], "the local line made a request"
+        assert log["constructed"] == [] and log["downloads"] == [], "doctor built an engine or downloaded"
+        assert snapshot(tmp) == after_pull, "doctor wrote something"
+    shutil.rmtree(home / ".local")
+    print("the local engine line: optional without the extra or without a whole model (a .partial is not one), ok naming the sizes on disk; "
+          "it builds no engine, downloads nothing, makes no request and creates nothing")
 
 # --------------------------------------------------------------------------- client.probe_token
 section("client.probe_token")
