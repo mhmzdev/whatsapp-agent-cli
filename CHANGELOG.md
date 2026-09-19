@@ -2,6 +2,22 @@
 
 Versions follow [SemVer](https://semver.org). Before `1.0.0` the API may still move; `1.0.0` comes once Hisab runs on this package and nothing had to change.
 
+## 0.4.0 — `.env`, read for you
+
+**Changed: the command line reads `./.env`**
+- Every command now fills gaps in the environment from a `.env` file in the directory it runs in. A variable already exported in the shell always wins, and a blank export counts as unset. This replaces the earlier rule that the command read only exported variables. Anyone running `wa-agent` in a folder that has a `.env` now picks up what it sets.
+- One `env:` line on stderr says where each variable came from, for example `env: WHATSAPP_AGENT_TOKEN from ./.env; GEMINI_API_KEY from the shell (./.env also sets it, not used)`. It prints only when `./.env` supplied or shadowed something, so a run without one has exactly the stderr it had. No value, and no line of the file, is ever printed. `recv --json` output is unchanged.
+- `--no-env-file`, a global option placed before the subcommand, turns it off and gives the old behaviour exactly.
+- The token is looked for in this order: the shell, then `--token-file`, then `./.env`. A flag you type beats a file that happens to be in the directory.
+- A line the parser can't read is skipped with a warning naming its line number only. The format is `KEY=VALUE`, `#` comments, optional `export`, and quotes taken literally. No new dependency.
+- The library does not read `.env`: `import wa_agent` never reads a file from your working directory.
+
+**Doctor**
+- The token, key, state directory and local engine lines say where their variable came from.
+
+**Changed**
+- `no_token`'s message now says the command line also reads `./.env`.
+
 ## 0.3.0 — offline transcription
 
 **Transcription, offline**
