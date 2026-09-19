@@ -29,3 +29,7 @@ NOTES.md
 
 # third-party documents never belong here
 *.pdf
+
+# live test scratch state
+.live-state/
+.venv/
