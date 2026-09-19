@@ -7,7 +7,7 @@
 [![Tests](https://github.com/mhmzdev/whatsapp-agent-cli/actions/workflows/tests.yml/badge.svg?branch=develop)](https://github.com/mhmzdev/whatsapp-agent-cli/actions/workflows/tests.yml)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](https://github.com/mhmzdev/whatsapp-agent-cli/blob/main/LICENSE)
 
-Send and receive WhatsApp messages from a script, a cron job, a git hook, or a coding agent with shell access. It handles the parts that are tedious to get right — the long-poll and its cursor, per-method rate limits, the 4,096-character send cap, the two-hop media fetch, and an error table where one code means "back off" and another means "this token is dead, stop".
+Send and receive WhatsApp messages from a script, a cron job, a git hook, or a coding agent with shell access. It handles the parts that are tedious to get right — the long-poll and its cursor, per-method rate limits, the 4,096-character send cap, the two-hop media fetch, an error table where one code means "back off" and another means "this token is dead, stop", and voice notes turned into text by Gemini, OpenRouter, or fully offline on your own machine.
 
 ```bash
 wa-agent send "deploy finished, 3 tests failing"
@@ -19,9 +19,11 @@ It knows nothing about coding agents, folders, permissions or models. It moves m
 
 ## Contents
 
+- [What it does differently](#what-it-does-differently)
 - [Install](#install)
 - [Get a token](#get-a-token)
 - [Use it](#use-it)
+- [Transcription](#transcription)
 - [Use it from Python](#use-it-from-python)
 - [Where it keeps things](#where-it-keeps-things)
 - [When something fails](#when-something-fails)
@@ -29,6 +31,50 @@ It knows nothing about coding agents, folders, permissions or models. It moves m
 - [Coming next: the relay](#coming-next-the-relay)
 - [Contributing](#contributing)
 - [License](#license)
+
+## What it does differently
+
+Sending a WhatsApp message is one HTTP call. What takes a real bot to get right is everything around it: the process that dies halfway through a batch, the platform that says slow down, the voice note that arrives when there is no key to transcribe it. Those behaviours are the point of this package. Each was learned running [Hisab](#built-on-it-hisab) against real messages, and each is pinned by the repo's check.
+
+### Nothing is lost, nothing is stolen
+
+| Behaviour | What it means for you |
+|---|---|
+| **The cursor moves after the batch** | It is saved only once a batch is delivered, and any message id already seen is skipped. A crash can repeat a message; it can never lose one |
+| **One poller per token** | The platform allows a single long-poll and answers `409` when a second takes it. `recv` exits with `another_poller` rather than silently competing for your messages |
+| **A dead token stops the loop** | A `401` exits `4` and is never retried. In `recv --follow`, a `429` or `503` backs off from 1s to 60s and keeps going. The two never look alike |
+| **`doctor` cannot steal the poll** | Checking a setup with a real poll would take the long-poll from a running `recv`. `doctor` uses a read that cannot be a poll, so it is safe to run beside one |
+
+### Sending and media
+
+| Behaviour | What it means for you |
+|---|---|
+| **Long messages split cleanly** | Cut on paragraph boundaries under WhatsApp's 4,096-character cap, numbered `(i/n)`, with markdown converted to WhatsApp formatting |
+| **A half-failed send tells you what arrived** | Every part that already went out is printed and recorded before a later one can fail, so a retry duplicates nothing |
+| **Rate limits are built in** | Paced per method, with one retry past a `429`. You do not write the backoff |
+| **Size caps are checked before the upload** | 5 MB an image, 500 KB a sticker, 16 MB anything else, refused locally without spending a request |
+| **`--dry-run` shows exactly what would go out** | Needs no token and sends nothing |
+
+### Voice notes, where the opinions are
+
+| Behaviour | What it means for you |
+|---|---|
+| **You choose the provider, it never guesses** | `gemini` unless you say otherwise. A key for another provider is never spent because it was lying in your environment |
+| **Offline is opt-in, never a fallback** | A default install has no offline engine. A missing key does not switch one on: `recv` warns once and delivers the note marked `transcribed: false` |
+| **Nothing downloads behind your back** | A model comes only from `wa-agent model pull`, which says its size first. Never during `recv` |
+| **A failed transcription is never passed off as speech** | The note is delivered marked, with the reason in `transcription_error`. An empty result or a provider's error message is an error, never words nobody said |
+| **A weak transcript says so** | A locally transcribed note carries `transcribed_by`, so your code can weigh it. The docs say what the engine is bad at |
+| **The message keeps its shape** | The words are added at `text.body`; `type`, `audio` and everything else are untouched, so code that already reads a message keeps working |
+
+### Failures, and your machine
+
+| Behaviour | What it means for you |
+|---|---|
+| **Every failure is a code** | One fixed line, an exit status a script can branch on, and a verdict on whether retrying helps. `wa-agent errors` prints the table |
+| **The platform's words stay in one place** | They appear only on a `detail:` line, and a token or key is never printed in an error or by `doctor` |
+| **Nothing lands in your working directory** | State lives under XDG, per profile, and downloaded models beside it. Downloads are swept after a day |
+| **Secrets come from the environment** | Or from a token file. No flag takes one, so none reaches your shell history or the process list |
+| **One dependency** | `requests`. The heavy things are extras you ask for |
 
 ## Install
 
@@ -38,15 +84,7 @@ pip install wa-agent
 
 The package, the command and the module are all `wa-agent` / `wa_agent`. (This repository is named `whatsapp-agent-cli`; that name and `whatsapp-agent` both belong to unrelated projects on PyPI.)
 
-Transcription needs no extra install — only a key, because it is an ordinary HTTP call. Two providers, and the choice is always yours: `gemini` unless you say `--provider openrouter`. A key for the other one is never used in its place, however many you have exported.
-
-```bash
-export GEMINI_API_KEY='…'
-wa-agent transcribe voice-note.ogg
-
-export OPENROUTER_API_KEY='…'
-wa-agent transcribe voice-note.ogg --provider openrouter    # --model takes an OpenRouter model id
-```
+That is the whole install: sending, receiving, media, and transcription through Gemini or OpenRouter, which needs only a key because it is an ordinary HTTP call. Transcribing offline is an extra you ask for. See [Transcription](#transcription).
 
 ## Get a token
 
@@ -81,7 +119,7 @@ A voice note keeps its shape and gains the words, so code that reads `text.body`
  "text": {"body": "call me back at six"}, "transcribed": true}
 ```
 
-`recv --transcribe` takes the same `--provider`. Without a key for it, it warns once and delivers voice notes marked `transcribed: false` rather than stopping.
+`recv --transcribe` takes the same `--provider`. Without a key for it, it warns once and delivers voice notes marked `transcribed: false` rather than stopping. [More on transcription.](#transcription)
 
 `recv --download` fetches each photo, document and voice note into the state directory as it arrives and adds a `path` to the message. It is opt-in because it puts a fetch inside the delivery loop; a download that fails is delivered marked with `download_error`, never dropped. With `--transcribe` as well, a voice note is fetched once, kept, and transcribed from that copy.
 
@@ -91,10 +129,11 @@ A voice note keeps its shape and gains the words, so code that reads `text.body`
 | `send --file <path>` | Upload and attach. `--media <id>` attaches something already uploaded |
 | `send --dry-run` | Print exactly what would be sent, send nothing, need no token |
 | `recv` | Messages since the last run. `--json` for one object per line, `--follow` to stream, `--typing` to show a typing indicator while you work, `--transcribe` (with `--provider`) to add words to voice notes, `--download` to keep photos and files as they arrive |
-| `transcribe <file>` | Audio in, text out. Gemini or OpenRouter, chosen with `--provider`; offline is [#20](https://github.com/mhmzdev/whatsapp-agent-cli/issues/20) |
+| `transcribe <file>` | Audio in, text out. Gemini or OpenRouter, chosen with `--provider`, or `--provider local` to run offline (see [Transcription](#transcription)) |
+| `model pull [size]` | Download a Whisper model for `--provider local`: `tiny`, `base` (the default) or `small`. Says the size first. It is the only thing that ever downloads one |
 | `media get <id>` | Download to the state directory, or `--out DIR`. Prints the path and nothing else |
 | `media put <path>` | Upload, print the media id |
-| `doctor` | Check a setup, a line each: Python, token, each transcription key, state directory, creator. Says what to fix, exits `15` if anything fails. It never polls, so it is safe beside a running `recv`, but it does make real, free metadata requests to the platform and to every provider whose key is set in your environment |
+| `doctor` | Check a setup, a line each: Python, token, each transcription key, the local engine, state directory, creator. Says what to fix, exits `15` if anything fails. It never polls, so it is safe beside a running `recv`, but it does make real, free metadata requests to the platform and to every provider whose key is set in your environment |
 | `errors` | The exit-code table |
 
 Global options — `--token-file`, `--state-dir`, `--profile` — go **before** the subcommand, as in git:
@@ -103,6 +142,56 @@ Global options — `--token-file`, `--state-dir`, `--profile` — go **before** 
 wa-agent --profile work recv --follow     # yes
 wa-agent recv --follow --profile work     # no: unrecognized argument
 ```
+
+## Transcription
+
+Three providers, and one rule: **you choose, it never guesses.**
+
+| | Gemini | OpenRouter | Local |
+|---|---|---|---|
+| **Choose with** | nothing (the default), or `--provider gemini` | `--provider openrouter` | `--provider local` |
+| **Needs** | `GEMINI_API_KEY` | `OPENROUTER_API_KEY` | no key |
+| **Install** | nothing extra | nothing extra | `pip install "wa-agent[local]"`, then `wa-agent model pull` |
+| **Cost and privacy** | billed by the provider; the audio goes to them | billed by the provider; the audio goes to them | free; nothing leaves your machine |
+| **Marked in `recv --json`** | nothing added | nothing added | `"transcribed_by": "local:base"` |
+
+```bash
+export GEMINI_API_KEY='…'
+wa-agent transcribe voice-note.ogg
+
+export OPENROUTER_API_KEY='…'
+wa-agent transcribe voice-note.ogg --provider openrouter    # --model takes an OpenRouter model id
+```
+
+### Offline, on your own machine
+
+Nothing leaves the machine and nothing is billed. It is an extra because it is heavy (about 150 MB of dependencies) and a model is a separate download, so it takes three deliberate steps:
+
+```bash
+pip install "wa-agent[local]"                         # 1. the engine
+wa-agent model pull                                   # 2. a model: says the size first; base is about 150 MB
+wa-agent transcribe voice-note.ogg --provider local   # 3. ask for it: tiny, base or small; --model small
+```
+
+It is never chosen for you, not even when a key is missing: `--provider local` is a decision. Nothing downloads during `recv`. Models are kept in `$XDG_DATA_HOME/wa-agent/models/`, shared by every profile.
+
+### When there is no key
+
+Nothing is imposed on you, and nothing is used in its place:
+
+| You run | With no key and no local engine |
+|---|---|
+| `wa-agent transcribe note.ogg` | Exits `12` (`no_transcription_key`), and the `detail:` line names the variable to set |
+| `wa-agent recv --transcribe` | Warns once, up front, then delivers each voice note marked `transcribed: false` and keeps going |
+| `wa-agent recv --transcribe --provider local` before `model pull` | The same: one warning that names the fix, notes delivered marked, and no download |
+
+### What the local engine is bad at
+
+- **Fine:** clear, accented English.
+- **Poor:** Urdu, Roman Urdu, and speech that switches between languages. A small Whisper model tends to write fluent, confident English that was never said, rather than failing, so a wrong transcript looks exactly like a right one.
+- **Slower** than an API call, and `recv` waits while it works.
+- **So it is tagged:** `recv --json` adds `"transcribed_by": "local:base"` to a locally transcribed voice note, and adds nothing to a Gemini or OpenRouter one, so whatever reads a message can weigh it differently.
+- **Three sizes only:** `tiny`, `base` and `small`. There is no English-only (`.en`) model, because it would turn Urdu into English even more confidently.
 
 ## Use it from Python
 
@@ -122,7 +211,7 @@ for message in messages:
 
 ## Where it keeps things
 
-Nothing is written into your working directory. State lives at `$XDG_STATE_HOME/wa-agent/<profile>/` (or `~/.local/state/…`), holding the poll cursor, the message log and downloaded media. `--state-dir` moves it; `--profile` keeps two agents apart.
+Nothing is written into your working directory. State lives at `$XDG_STATE_HOME/wa-agent/<profile>/` (or `~/.local/state/…`), holding the poll cursor, the message log and downloaded media. `--state-dir` moves it; `--profile` keeps two agents apart. Downloaded transcription models are kept apart from it, in `$XDG_DATA_HOME/wa-agent/models/` (or `~/.local/share/…`), because they are large and the same for every profile.
 
 **One poller per token.** The platform allows a single long-poll per agent and answers `409` when a second one takes the cursor, so `recv` exits rather than silently competing for your messages.
 

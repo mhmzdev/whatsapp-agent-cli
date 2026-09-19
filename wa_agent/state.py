@@ -43,6 +43,26 @@ def resolve_token(token_file=None, env=None):
     raise WhatsAppError("no_token", f"{TOKEN_ENV} unset and no --token-file given")
 
 
+def models_dir(env=None, create=True):
+    """Where downloaded transcription models live: `$XDG_DATA_HOME/wa-agent/models`,
+    else `~/.local/share/wa-agent/models`.
+
+    Data rather than state, and outside every profile: a model is hundreds of
+    megabytes, the same for every profile, and worth keeping when a profile is
+    thrown away. Like `state_dir`, never derived from the working directory.
+    """
+    env = os.environ if env is None else env
+    base = (env.get("XDG_DATA_HOME") or "").strip()
+    root = Path(base).expanduser() if base else Path(env.get("HOME", "~")).expanduser() / ".local" / "share"
+    path = (root / APP_DIR / "models").resolve()
+    if create:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise WhatsAppError("bad_usage", f"{path}: {exc}") from exc
+    return path
+
+
 def state_dir(profile=DEFAULT_PROFILE, override=None, env=None, create=True):
     """The directory this package keeps its state in, created 0700 on first use.
 
