@@ -48,6 +48,20 @@ export OPENROUTER_API_KEY='…'
 wa-agent transcribe voice-note.ogg --provider openrouter    # --model takes an OpenRouter model id
 ```
 
+### Offline transcription (optional, and weak on Urdu)
+
+Transcription can also run on your own machine: no key, no bill, and nothing leaves it. It is an extra, because it is heavy (about 150 MB of dependencies) and a model is a separate download:
+
+```bash
+pip install "wa-agent[local]"
+wa-agent model pull                                   # says the size first; base is about 150 MB
+wa-agent transcribe voice-note.ogg --provider local   # tiny, base or small: --model small
+```
+
+It is never chosen for you, not even when a key is missing: `--provider local` is a decision. Nothing downloads during `recv`; a voice note that arrives before the model is there is delivered marked `transcribed: false`, with one warning up front.
+
+**What it is bad at.** Accented English is fine. Urdu, Roman Urdu and speech that switches between languages are not: a small Whisper model tends to write fluent, confident English that was never said, rather than failing, so a wrong transcript looks exactly like a right one. It is also slower than an API call, and `recv` waits while it works. So that whatever reads a message can weigh it, `recv --json` adds `"transcribed_by": "local:base"` to a locally transcribed voice note, and adds nothing to a Gemini or OpenRouter one. Only `tiny`, `base` and `small` are offered; there is no English-only (`.en`) model, because it would turn Urdu into English even more confidently.
+
 ## Get a token
 
 In WhatsApp: **Settings → Agents → Create an agent → Chat info → API key.** An agent may only message its own creator — you — which is why there is no recipient management here.
@@ -91,10 +105,11 @@ A voice note keeps its shape and gains the words, so code that reads `text.body`
 | `send --file <path>` | Upload and attach. `--media <id>` attaches something already uploaded |
 | `send --dry-run` | Print exactly what would be sent, send nothing, need no token |
 | `recv` | Messages since the last run. `--json` for one object per line, `--follow` to stream, `--typing` to show a typing indicator while you work, `--transcribe` (with `--provider`) to add words to voice notes, `--download` to keep photos and files as they arrive |
-| `transcribe <file>` | Audio in, text out. Gemini or OpenRouter, chosen with `--provider`; offline is [#20](https://github.com/mhmzdev/whatsapp-agent-cli/issues/20) |
+| `transcribe <file>` | Audio in, text out. Gemini or OpenRouter, chosen with `--provider`, or `--provider local` to run offline (see [Install](#install)) |
+| `model pull [size]` | Download a Whisper model for `--provider local`: `tiny`, `base` (the default) or `small`. Says the size first. It is the only thing that ever downloads one |
 | `media get <id>` | Download to the state directory, or `--out DIR`. Prints the path and nothing else |
 | `media put <path>` | Upload, print the media id |
-| `doctor` | Check a setup, a line each: Python, token, each transcription key, state directory, creator. Says what to fix, exits `15` if anything fails. It never polls, so it is safe beside a running `recv`, but it does make real, free metadata requests to the platform and to every provider whose key is set in your environment |
+| `doctor` | Check a setup, a line each: Python, token, each transcription key, the local engine, state directory, creator. Says what to fix, exits `15` if anything fails. It never polls, so it is safe beside a running `recv`, but it does make real, free metadata requests to the platform and to every provider whose key is set in your environment |
 | `errors` | The exit-code table |
 
 Global options — `--token-file`, `--state-dir`, `--profile` — go **before** the subcommand, as in git:
@@ -122,7 +137,7 @@ for message in messages:
 
 ## Where it keeps things
 
-Nothing is written into your working directory. State lives at `$XDG_STATE_HOME/wa-agent/<profile>/` (or `~/.local/state/…`), holding the poll cursor, the message log and downloaded media. `--state-dir` moves it; `--profile` keeps two agents apart.
+Nothing is written into your working directory. State lives at `$XDG_STATE_HOME/wa-agent/<profile>/` (or `~/.local/state/…`), holding the poll cursor, the message log and downloaded media. `--state-dir` moves it; `--profile` keeps two agents apart. Downloaded transcription models are kept apart from it, in `$XDG_DATA_HOME/wa-agent/models/` (or `~/.local/share/…`), because they are large and the same for every profile.
 
 **One poller per token.** The platform allows a single long-poll per agent and answers `409` when a second one takes the cursor, so `recv` exits rather than silently competing for your messages.
 

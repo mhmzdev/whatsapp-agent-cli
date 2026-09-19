@@ -37,9 +37,14 @@ The first line is fixed text you can search for. The `detail:` line is for a hum
 | `transcription_unavailable` | 13 | **yes** | The transcription provider was unreachable, timed out, or rate-limited | Retry. During `recv --transcribe` the message is delivered marked rather than lost, so retrying is your choice, not a requirement |
 | `transcription_failed` | 14 | no | The provider answered, but with nothing usable: an empty transcript, a refusal, or a body that was not a transcript | Check the audio is audible and of a supported type. An error from a provider is never passed on as if it were speech, which is why this is a failure rather than a transcript |
 | `doctor_failed` | 15 | no | `wa-agent doctor` ran and at least one check failed. The report above the error line is the diagnosis; this code only says the run as a whole did not pass. An `optional` line never causes it | Read the `fix:` line under each `FAIL` and run `doctor` again. In a script, branch on `0` (all clear) versus `15` |
+| `local_not_ready` | 16 | no | `--provider local` was asked for and the local engine cannot run: the `local` extra is not installed, or the model size asked for has not been downloaded. The `detail:` line says which. `recv --transcribe --provider local` does not fail on this: it warns once and delivers voice notes marked `transcribed: false` | Run `pip install "wa-agent[local]"`, then `wa-agent model pull` (or `wa-agent model pull small`). Nothing downloads on its own, and a key for another provider is never used in its place |
 | `internal` | 70 | no | Something unforeseen. This is the fallback that keeps a traceback away from a caller | Re-run with `WHATSAPP_AGENT_DEBUG=1` for the traceback, and please open an issue with it |
 
 Exit `130` is the conventional one for Ctrl-C, not a failure: `recv --follow` uses it after finishing the batch it is on.
+
+## What no code can tell you
+
+`--provider local` can succeed and be wrong. Whisper's small models are poor at Urdu, Roman Urdu and speech that switches language, and their failure is not an error: they write fluent, confident English that was never said. No exit code catches that, which is why the engine is opt-in, why a local transcript is tagged (`transcribed_by` in `recv --json`), and why only `tiny`, `base` and `small` are offered (an English-only `.en` model would do the same thing with more confidence). It is fine for clear, accented English. If your voice notes are not that, use a provider.
 
 ## For a script
 

@@ -10,6 +10,10 @@ that might carry one, never reaches a line.
 Each check returns a `Check`. A `FAIL` always carries a fix; an `optional` line is a
 feature that is not set up, or could not be verified, and never fails a script.
 
+The local engine line makes no request and imports nothing: it looks for the extra with
+`find_spec` and for downloaded models by their files, and it is never a failure, since
+an offline engine nobody asked for is not a broken setup.
+
 The two key probes are unconfirmed against the live providers: which statuses mean
 "rejected" is what their documentation and the platform's habits suggest, not what
 has been observed. An answer the tables do not know is `unverified`, never `accepted`.
@@ -20,11 +24,12 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
+from . import local
 from .client import WhatsApp
 from .errors import AuthError, WhatsAppError
 from .state import DEFAULT_PROFILE, TOKEN_ENV, state_dir
 from .store import Store
-from .transcribe import KEY_ENVS, PROVIDERS, api_key
+from .transcribe import KEY_ENVS, KEYED_PROVIDERS, api_key
 
 Check = namedtuple("Check", "name status message fix")
 
@@ -153,6 +158,19 @@ def check_key(provider, env=None, session=None):
     return Check(name, OPTIONAL, f"{var} is set; {label} could not be reached or gave no clear answer, so it is not verified", "")
 
 
+def check_local(env=None):
+    """Whether `--provider local` could run: the extra, and at least one model on disk.
+    `optional` until both are there, then `ok`; never `FAIL`, and it downloads nothing."""
+    env = os.environ if env is None else env
+    name = "local engine"
+    if not local.extra_installed():
+        return Check(name, OPTIONAL, 'the local extra is not installed; only needed for --provider local (pip install "wa-agent[local]")', "")
+    sizes = local.installed_sizes(env)
+    if not sizes:
+        return Check(name, OPTIONAL, "installed, but no model is downloaded; only needed for --provider local (wa-agent model pull)", "")
+    return Check(name, OK, f"installed, with {', '.join(sizes)} downloaded in {local.models_dir(env, create=False)}", "")
+
+
 def _nearest_existing(path):
     for candidate in (path, *path.parents):
         if candidate.exists():
@@ -201,7 +219,8 @@ def run_checks(token_file=None, state_dir_override=None, profile=DEFAULT_PROFILE
     return [
         check_python(python_version),
         check_token(token_file, env=env, session=session),
-        *(check_key(provider, env=env, session=session) for provider in PROVIDERS),
+        *(check_key(provider, env=env, session=session) for provider in KEYED_PROVIDERS),
+        check_local(env),
         state,
         check_creator(path),
     ]
