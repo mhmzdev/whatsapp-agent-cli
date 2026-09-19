@@ -2,12 +2,17 @@
 
 Versions follow [SemVer](https://semver.org). Before `1.0.0` the API may still move; `1.0.0` comes once Hisab runs on this package and nothing had to change.
 
-## 0.2.0 — OpenRouter transcription
+## 0.2.0 — OpenRouter transcription, and `doctor`
 
 **Transcription**
 - OpenRouter is a second provider beside Gemini: `wa-agent transcribe <file> --provider openrouter` and `recv --transcribe --provider openrouter`, reading `OPENROUTER_API_KEY`; `--model` takes an OpenRouter model id. From Python, `transcribe(path, provider="openrouter")`.
 - The provider is always your choice — `gemini` unless you say otherwise — and never worked out from which key happens to be set.
 - `recv --transcribe` refuses an unknown provider before its first poll, instead of marking every voice note failed.
+
+**Doctor**
+- `wa-agent doctor` checks a setup in one go, a line each: Python, the token, each transcription key, the state directory and the recorded creator, with the fix under anything that fails. Exits `15` (`doctor_failed`, new) when a check fails.
+- It never polls, so it is safe beside a running `recv`, and it writes nothing. It does make real, free metadata requests to the platform and to every provider whose key is set.
+- `WhatsApp.probe_token()` is new in the library: one read that says whether the platform accepts a token.
 
 **Changed**
 - `no_transcription_key` (exit `12`, unchanged) no longer names `GEMINI_API_KEY` in its message; its `detail:` line names the variable actually read.
