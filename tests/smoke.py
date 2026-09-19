@@ -1375,6 +1375,29 @@ with tempfile.TemporaryDirectory() as tmp:
     assert len(session.calls) == 1, "with no keys, the only request is the token probe"
     print("no keys at all: two optional lines and exit 0")
 
+    # a key pasted across two lines FAILs, naming the variable and never the value, and no request is sent
+    # (`requests` would refuse the header before sending, which must not read as an unreachable provider)
+    broken = "wskey-part-one-SECRET\nwskey-part-two-SECRET"
+    for provider, case in cases.items():
+        other = "openrouter" if provider == "gemini" else "gemini"
+        # nothing else set: the run makes no request at all
+        session = DoctorSession()
+        status, out, err = run_doctor(session, **{"token": None, "gemini": None, "openrouter": None, provider: broken})
+        assert session.calls == [], f"{provider}: a key with a line break was sent somewhere: {session.calls}"
+        checks, fixes = doctor_lines(out)
+        line = checks[case["index"]]
+        assert status == 15 and line[0] == "FAIL" and "whitespace" in line[2] and case["var"] in line[2], line
+        assert "one unbroken line" in fixes[case["index"]] and case["var"] in fixes[case["index"]], fixes
+        # with a good token and a good other key, only those are asked
+        session = DoctorSession(wa=GOOD_WA, **{provider: None, other: GOOD_KEY})
+        status, out, err = run_doctor(session, **{provider: broken})
+        assert not session.to(case["host"]), f"{provider}: the broken key reached the provider"
+        assert len(session.to(WA_HOST)) == 1 and len(session.to(GEMINI_HOST if other == "gemini" else OPENROUTER_HOST)) == 1
+        assert status == 15 and doctor_lines(out)[0][case["index"]][0] == "FAIL"
+        for part in ("wskey-part-one", "wskey-part-two"):
+            assert part not in out and part not in err, f"{provider}: the value of a key reached the output"
+    print("a key with whitespace inside it fails for both providers, naming the variable and never the value, with no request sent")
+
     # 6. the state directory and the creator; nothing is ever created or written
     fresh = tmp / "not" / "here" / "yet"
     session = DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY)

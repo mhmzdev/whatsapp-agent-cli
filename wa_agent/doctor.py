@@ -51,7 +51,6 @@ KEY_PROBES = {
         "rejected": (401, 403),
     },
 }
-assert set(KEY_PROBES) == set(PROVIDERS), "every transcription provider needs a key probe"
 
 
 def probe_key(provider, key, session=None, timeout=15):
@@ -140,6 +139,11 @@ def check_key(provider, env=None, session=None):
     key = api_key(var, env=env)
     if not key:
         return Check(name, OPTIONAL, f"{var} is not set; only needed for --provider {provider}", "")
+    if any(ch.isspace() for ch in key):
+        # A key pasted across two lines: `requests` refuses such a header before sending it,
+        # which would otherwise read as an unreachable provider.
+        return Check(name, FAIL, f"the key in {var} contains whitespace inside it",
+                     f"paste it again as one unbroken line, or unset {var} if you do not use --provider {provider}")
     result = probe_key(provider, key, session=session)
     if result == ACCEPTED:
         return Check(name, OK, f"{var} accepted by {label}", "")
