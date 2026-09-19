@@ -20,6 +20,7 @@ import traceback
 from pathlib import Path
 
 from . import __version__
+from . import doctor as doctor_checks
 from . import media as media_types
 from . import transcribe as transcription
 from .client import WhatsApp
@@ -377,6 +378,9 @@ def build_parser():
     p_err = sub.add_parser("errors", help="list every exit code and what it means")
     p_err.set_defaults(func=_errors)
 
+    p_doc = sub.add_parser("doctor", help="check a setup, one line a check, without disturbing a running recv")
+    p_doc.set_defaults(func=_doctor)
+
     p_tr = sub.add_parser("transcribe", help="turn an audio file into text")
     p_tr.add_argument("path")
     p_tr.add_argument("--provider", default="gemini", metavar="NAME",
@@ -406,6 +410,8 @@ def main(argv=None, env=None, session=None, sleep=None):
             _media(args, env=env, session=session)
         elif args.func is _recv:
             _recv(args, env=env, session=session, **({"sleep": sleep} if sleep else {}))
+        elif args.func is _doctor:
+            _doctor(args, env=env, session=session)
         else:
             args.func(args)
     except WhatsAppError as exc:
@@ -415,6 +421,18 @@ def main(argv=None, env=None, session=None, sleep=None):
     except Exception as exc:  # noqa: BLE001 — nothing may reach a caller as a traceback
         return _fail(exc, classify(exc), env)
     return 0
+
+
+def _doctor(args, env=None, session=None):
+    """Print one line a check; fail with `doctor_failed` when any check does. Nothing
+    is created, written or polled — see wa_agent/doctor.py."""
+    checks = doctor_checks.run_checks(token_file=args.token_file, state_dir_override=args.state_dir,
+                                      profile=args.profile, env=env, session=session)
+    for line in doctor_checks.render(checks):
+        print(line)
+    bad = doctor_checks.failed(checks)
+    if bad:
+        raise WhatsAppError("doctor_failed", f"{len(bad)} of {len(checks)} checks failed")
 
 
 def _errors(args):

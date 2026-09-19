@@ -21,6 +21,7 @@ Exit statuses, stable from here on — a script may switch on them:
     12  no_transcription_key  no key for the transcription provider
     13  transcription_unavailable  the provider was unreachable; a retry may work
     14  transcription_failed  the provider answered but produced no usable transcript
+    15  doctor_failed         `doctor` found at least one setup check failing
     70  internal              anything unclassified (EX_SOFTWARE)
 
 The 6 / 7 split is the one a caller acts on: 7 is worth looping on, 6 never is.
@@ -51,6 +52,7 @@ CODES = {
     "no_transcription_key": Error(12, "no transcription key found; the detail line names the variable to set, or pass --key-env NAME", False),
     "transcription_unavailable": Error(13, "the transcription provider is unreachable right now; retrying may help", True),
     "transcription_failed": Error(14, "the transcription provider produced no usable transcript", False),
+    "doctor_failed": Error(15, "one or more setup checks failed; each line above says what to do", False),
     "internal": Error(70, "something went wrong on this side", False),
 }
 
