@@ -2,7 +2,9 @@
 
 **A client for the WhatsApp Agent Platform — a library first, with a command-line tool on top.**
 
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![PyPI](https://img.shields.io/pypi/v/wa-agent)](https://pypi.org/project/wa-agent/)
+[![Python](https://img.shields.io/pypi/pyversions/wa-agent)](https://pypi.org/project/wa-agent/)
+[![Tests](https://github.com/mhmzdev/whatsapp-agent-cli/actions/workflows/tests.yml/badge.svg?branch=develop)](https://github.com/mhmzdev/whatsapp-agent-cli/actions/workflows/tests.yml)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
 Send and receive WhatsApp messages from a script, a cron job, a git hook, or a coding agent with shell access. It handles the parts that are tedious to get right — the long-poll and its cursor, per-method rate limits, the 4,096-character send cap, the two-hop media fetch, and an error table where one code means "back off" and another means "this token is dead, stop".
@@ -12,6 +14,19 @@ wa-agent send "deploy finished, 3 tests failing"
 ```
 
 It knows nothing about coding agents, folders, permissions or models. It moves messages.
+
+## Contents
+
+- [Install](#install)
+- [Get a token](#get-a-token)
+- [Use it](#use-it)
+- [Use it from Python](#use-it-from-python)
+- [Where it keeps things](#where-it-keeps-things)
+- [When something fails](#when-something-fails)
+- [Built on it: Hisab](#built-on-it-hisab)
+- [Coming next: the relay](#coming-next-the-relay)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Install
 
@@ -116,20 +131,26 @@ detail: POST /messages: HTTP 400 error.code 131009 …
 
 `wa-agent errors` lists them all. [`docs/errors.md`](docs/errors.md) says what to do about each and which are worth retrying — the short version is that exit `7` is, and `4` and `6` never are.
 
-## What this is part of
+## Built on it: Hisab
 
-Two layers, and this repository ships the first:
+This package was extracted from [**Hisab**](https://github.com/mhmzdev/hisab-whatsapp), a plain-language ledger you keep by texting WhatsApp — in English, Urdu or Roman Urdu, by voice or by text, with every entry checked by `hledger` before it is written. Hisab is the first product on this transport: it was where the cursor, dedup, rate-limit and dead-token rules were learned the hard way, and it moves onto the published `wa-agent` package next.
 
-- **The transport** (here): messages, media, transcription. No opinions about what you do with them.
-- **The relay** (later): reading a message, running a coding agent such as Claude Code over a folder, and sending back what it says. It will be a command in this same package, built on the transport, once the transport is published and stable.
+## Coming next: the relay
 
-The transport is also what [`hisab-whatsapp`](https://github.com/mhmzdev/hisab-whatsapp) — a plain-language ledger you text — will use in place of its own copy.
+The transport moves messages. The relay is what makes it an agent in your pocket.
 
-## Status
+```bash
+wa-agent relay --folder ~/code/my-project     # coming soon
+```
 
-Working: `send`, `recv`, `media`, `transcribe`, `errors` and the library behind them, each covered by a no-network check on Python 3.10 through 3.13.
+Text it from your phone — *"why is the deploy failing?"*, a screenshot of an error, a voice note describing a bug — and it runs a coding agent such as **Claude Code** over that folder and sends back what it says. The design is settled; the code starts once this release is out:
 
-Not yet: offline transcription ([#20](https://github.com/mhmzdev/whatsapp-agent-cli/issues/20)), the first PyPI release ([#8](https://github.com/mhmzdev/whatsapp-agent-cli/issues/8)), and the relay. Progress lives on [epic #1](https://github.com/mhmzdev/whatsapp-agent-cli/issues/1).
+- **Read-only by default.** The agent can read the folder and nothing else. Writable paths are declared, never assumed, and a folder created later is denied until you say otherwise.
+- **The relay owns the session.** Starting fresh, switching models and compacting a long conversation happen in the relay, before the agent is called, because none of them survive a non-interactive run otherwise.
+- **Everything it hears, it can use.** Voice notes arrive as words, photos and files arrive by path, and a quoted reply arrives with the message it quoted — all from this package, underneath.
+- **One command in this package, optional.** `pip install wa-agent` never makes you run it. The transport stays usable on its own, and the relay uses it exactly as your own scripts would.
+
+Claude Code comes first, Codex after. Follow along on the [issues](https://github.com/mhmzdev/whatsapp-agent-cli/issues).
 
 ## Contributing
 
