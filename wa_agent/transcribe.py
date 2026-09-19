@@ -15,8 +15,9 @@ in the environment, and a weaker offline engine must not stand in for a provider
 whose key was forgotten.
 
 The key comes from the environment (the chosen provider's own variable by
-default), never from a config file and never from a flag, so it does not end up
-in a shell history or a process listing. `local` has none.
+default), never from a flag, so it does not end up in a shell history or a process
+listing. The command-line tool may have filled that environment from `./.env`; this
+module only ever reads the mapping it is given. `local` has none.
 """
 
 import base64

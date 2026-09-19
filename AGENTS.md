@@ -35,6 +35,7 @@ wa_agent/
   __init__.py    the package version, and the names a dependent imports
   errors.py      THE failure registry: every code, its message and its exit status; AuthError is permanent
   state.py       where the token comes from (env, then --token-file), where state lives and where models live (XDG, never the cwd)
+  envfile.py     ./.env for the CLI only: parse KEY=VALUE lines, fill the environment's gaps (the shell wins), record each variable's source
   client.py      WhatsApp: the HTTP client — poll, typing, download, upload, send_media, send_iter/send, probe_token; every call
                  paced by the rate limiter, retried once past a 429, and classified into a code
   ratelimit.py   one rolling 60s window per platform method (messages, statuses, updates, media_post, media_get)
@@ -44,7 +45,8 @@ wa_agent/
   transcribe.py  voice notes → text: gemini and openrouter over plain HTTP, local through local.py; the provider is never guessed
   local.py       the offline engine (the `local` extra, faster-whisper): `model pull`, readiness checks, never downloads mid-recv
   doctor.py      `wa-agent doctor`: one line a check, never polls, never writes
-  cli.py         the argparse surface: send, recv, media get/put, transcribe, model pull, doctor, errors; failures leave through _fail
+  cli.py         the argparse surface: send, recv, media get/put, transcribe, model pull, doctor, errors; reads ./.env unless
+                 --no-env-file and names each variable's source on stderr (the `env:` line); failures leave through _fail
   __main__.py    python -m wa_agent
 tests/smoke.py   the check: no network, no token, no writes outside a temp dir
 tests/live.py    a real round trip against a real agent (make live); reads .env, so it is the owner's to run
@@ -61,7 +63,7 @@ The relay is where [`hisab-whatsapp`](https://github.com/mhmzdev/hisab-whatsapp)
 - **Transport invariants:** skip a message id already in the store; advance the offset only after the batch; back off on 429 and 503; one poller per agent token (409 means another poller); a 401, or a 400 with `error.code` 100, means the token is dead — exit, never retry forever; split replies under WhatsApp's 4,096-character cap.
 - **Voice notes are transcribed before the agent sees them;** a failed transcription is reported to the user, never handed to the agent as if they had said it.
 - **Privacy.** Nothing from the author's personal vault, VPS, tokens, WhatsApp creator id, folder names or skill names enters this repo, an issue, a PR, a doc or a commit message. See `.agents/rules/privacy.md`. Example configs use a fake project.
-- **Secrets only from the environment** or a token file outside the repo; never committed, never in an example.
+- **Secrets only from the environment**, from `./.env` in the working directory, or from a token file outside the repo; never committed, never in an example. `./.env` is read by the CLI only, never by the library (`import wa_agent` reads no file from anyone's working directory). It only fills gaps: the shell always wins, and for the token the order is shell, `--token-file`, `./.env`. Sources are named on stderr, values never; `--no-env-file` turns it off. This reverses the earlier rule that the CLI never loaded `.env` (#44).
 
 ## Commands
 

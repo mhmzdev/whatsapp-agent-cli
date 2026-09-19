@@ -73,7 +73,7 @@ Sending a WhatsApp message is one HTTP call. What takes a real bot to get right 
 | **Every failure is a code** | One fixed line, an exit status a script can branch on, and a verdict on whether retrying helps. `wa-agent errors` prints the table |
 | **The platform's words stay in one place** | They appear only on a `detail:` line, and a token or key is never printed in an error or by `doctor` |
 | **Nothing lands in your working directory** | State lives under XDG, per profile, and downloaded models beside it. Downloads are swept after a day |
-| **Secrets come from the environment** | Or from a token file. No flag takes one, so none reaches your shell history or the process list |
+| **Secrets come from the environment** | Or from `./.env`, or a token file. No flag takes one, so none reaches your shell history or the process list. What came from `./.env` is named on stderr, never shown |
 | **One dependency** | `requests`. The heavy things are extras you ask for |
 
 ## Install
@@ -93,6 +93,14 @@ In WhatsApp: **Settings → Agents → Create an agent → Chat info → API key
 ```bash
 export WHATSAPP_AGENT_TOKEN='…'        # or: wa-agent --token-file ~/.wa-token …
 ```
+
+Or put it in a `.env` file in the directory you run `wa-agent` from, as `WHATSAPP_AGENT_TOKEN=…`. Every command reads `./.env`, and only that one: not a parent directory, not your home directory. It only fills gaps, so a variable your shell already exports always wins. For the token, the order is the shell, then `--token-file`, then `./.env`. When `./.env` supplied a variable, or set one the shell overrode, the command says so on stderr, by name and never by value:
+
+```
+env: WHATSAPP_AGENT_TOKEN from ./.env; GEMINI_API_KEY from the shell (./.env also sets it, not used)
+```
+
+That line is how you notice a `.env` you did not mean to use. Run `wa-agent` inside another project that keeps the same variable in its `.env`, a Hisab checkout for one, and that project's token is the one used. `wa-agent --no-env-file …` skips the file entirely. The library never reads it: a program that imports `wa_agent` sees only its own environment.
 
 ## Use it
 
@@ -136,7 +144,7 @@ A voice note keeps its shape and gains the words, so code that reads `text.body`
 | `doctor` | Check a setup, a line each: Python, token, each transcription key, the local engine, state directory, creator. Says what to fix, exits `15` if anything fails. It never polls, so it is safe beside a running `recv`, but it does make real, free metadata requests to the platform and to every provider whose key is set in your environment |
 | `errors` | The exit-code table |
 
-Global options — `--token-file`, `--state-dir`, `--profile` — go **before** the subcommand, as in git:
+Global options — `--token-file`, `--state-dir`, `--profile`, `--no-env-file` — go **before** the subcommand, as in git:
 
 ```bash
 wa-agent --profile work recv --follow     # yes

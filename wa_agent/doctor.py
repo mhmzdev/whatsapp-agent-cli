@@ -24,7 +24,7 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
-from . import local
+from . import envfile, local
 from .client import WhatsApp
 from .errors import AuthError, WhatsAppError
 from .state import DEFAULT_PROFILE, TOKEN_ENV, state_dir
@@ -94,14 +94,30 @@ def check_python(python_version=None):
     return Check("python", FAIL, f"{shown} is older than the {need} this needs", f"install Python {need} or newer")
 
 
-def _token_source(token_file, env):
+def _named(name, sources, inner=False):
+    """A variable's name, with where it came from when the CLI said (`sources`). A
+    library caller passes no `sources`, and sees the name alone, as before ./.env."""
+    if sources is None or name not in sources:
+        return name
+    return envfile.describe(name, sources[name], inner=inner)
+
+
+def _suffix(name, sources):
+    """` (NAME from ./.env)` for a line whose answer a variable decided, or nothing."""
+    if sources is None or name not in sources:
+        return ""
+    return f" ({envfile.describe(name, sources[name], inner=True)})"
+
+
+def _token_source(token_file, env, sources=None):
     """`(token, source)`, or `(None, reason)`. Which source won is worth saying, and
     `resolve_token` does not report it."""
     token = (env.get(TOKEN_ENV) or "").strip()
     if token:
-        return token, TOKEN_ENV
+        return token, _named(TOKEN_ENV, sources)
     if not token_file:
-        return None, f"no token in {TOKEN_ENV} and no --token-file"
+        where = f"{TOKEN_ENV} (the shell or {envfile.SHOWN})" if sources is not None else TOKEN_ENV
+        return None, f"no token in {where} and no --token-file"
     path = Path(token_file).expanduser()
     try:
         token = path.read_text(encoding="utf-8").strip()
@@ -112,12 +128,13 @@ def _token_source(token_file, env):
     return token, f"--token-file {path}"
 
 
-def check_token(token_file=None, env=None, session=None):
+def check_token(token_file=None, env=None, session=None, sources=None):
     env = os.environ if env is None else env
-    token, source = _token_source(token_file, env)
+    token, source = _token_source(token_file, env, sources)
     if token is None:
+        put = f", put it in {envfile.SHOWN}" if sources is not None else ""
         return Check("token", FAIL, source,
-                     f"export {TOKEN_ENV}, or pass --token-file PATH before the subcommand")
+                     f"export {TOKEN_ENV}{put}, or pass --token-file PATH before the subcommand")
     if any(ch.isspace() for ch in token):
         # A token pasted across two lines: the platform would only ever say 401.
         return Check("token", FAIL, f"the token in {source} contains whitespace inside it",
@@ -133,42 +150,50 @@ def check_token(token_file=None, env=None, session=None):
                          "check the connection and run doctor again; a token that could not be checked is not a good one")
         return Check("token", FAIL, "the platform answered something unexpected, so the token could not be verified",
                      "run doctor again; if it keeps happening, open an issue on the repository")
+    if source.startswith(f"{TOKEN_ENV} from "):
+        return Check("token", OK, f"accepted by the platform ({_named(TOKEN_ENV, sources, inner=True)})", "")
     return Check("token", OK, f"accepted by the platform (from {source})", "")
 
 
-def check_key(provider, env=None, session=None):
+def check_key(provider, env=None, session=None, sources=None):
     env = os.environ if env is None else env
     var = KEY_ENVS[provider]
     label = KEY_PROBES[provider]["name"]
     name = f"{provider} key"
     key = api_key(var, env=env)
     if not key:
-        return Check(name, OPTIONAL, f"{var} is not set; only needed for --provider {provider}", "")
+        where = f" in the shell or {envfile.SHOWN}" if sources is not None else ""
+        return Check(name, OPTIONAL, f"{var} is not set{where}; only needed for --provider {provider}", "")
+    shown = _named(var, sources)
+    in_file = (sources or {}).get(var) == envfile.DOTENV
+    unset = f"remove it from {envfile.SHOWN}" if in_file else "unset it"
+    unset_var = f"remove {var} from {envfile.SHOWN}" if in_file else f"unset {var}"
     if any(ch.isspace() for ch in key):
         # A key pasted across two lines: `requests` refuses such a header before sending it,
         # which would otherwise read as an unreachable provider.
-        return Check(name, FAIL, f"the key in {var} contains whitespace inside it",
-                     f"paste it again as one unbroken line, or unset {var} if you do not use --provider {provider}")
+        return Check(name, FAIL, f"the key in {shown} contains whitespace inside it",
+                     f"paste it again as one unbroken line, or {unset_var} if you do not use --provider {provider}")
     result = probe_key(provider, key, session=session)
     if result == ACCEPTED:
-        return Check(name, OK, f"{var} accepted by {label}", "")
+        return Check(name, OK, f"{shown} accepted by {label}", "")
     if result == REJECTED:
-        return Check(name, FAIL, f"{var} is set, but {label} rejected it",
-                     f"put a valid key in {var}, or unset it if you do not use --provider {provider}")
-    return Check(name, OPTIONAL, f"{var} is set; {label} could not be reached or gave no clear answer, so it is not verified", "")
+        return Check(name, FAIL, f"{shown} is set, but {label} rejected it",
+                     f"put a valid key in {var}, or {unset} if you do not use --provider {provider}")
+    return Check(name, OPTIONAL, f"{shown} is set; {label} could not be reached or gave no clear answer, so it is not verified", "")
 
 
-def check_local(env=None):
+def check_local(env=None, sources=None):
     """Whether `--provider local` could run: the extra, and at least one model on disk.
     `optional` until both are there, then `ok`; never `FAIL`, and it downloads nothing."""
     env = os.environ if env is None else env
     name = "local engine"
     if not local.extra_installed():
         return Check(name, OPTIONAL, 'the local extra is not installed; only needed for --provider local (pip install "wa-agent[local]")', "")
+    where = _suffix("XDG_DATA_HOME", sources)   # where models are looked for
     sizes = local.installed_sizes(env)
     if not sizes:
-        return Check(name, OPTIONAL, "installed, but no model is downloaded; only needed for --provider local (wa-agent model pull)", "")
-    return Check(name, OK, f"installed, with {', '.join(sizes)} downloaded in {local.models_dir(env, create=False)}", "")
+        return Check(name, OPTIONAL, f"installed, but no model is downloaded{where}; only needed for --provider local (wa-agent model pull)", "")
+    return Check(name, OK, f"installed, with {', '.join(sizes)} downloaded in {local.models_dir(env, create=False)}{where}", "")
 
 
 def _nearest_existing(path):
@@ -178,8 +203,16 @@ def _nearest_existing(path):
     return None
 
 
-def check_state_dir(profile=DEFAULT_PROFILE, override=None, env=None):
+def check_state_dir(profile=DEFAULT_PROFILE, override=None, env=None, sources=None):
     """Writable, or absent with a writable place to make it. Created and written: never."""
+    path, check = _check_state_dir(profile, override, env)
+    if path is not None and not override:
+        # --state-dir decides alone; otherwise XDG_STATE_HOME did, if it is set
+        check = check._replace(message=check.message + _suffix("XDG_STATE_HOME", sources))
+    return path, check
+
+
+def _check_state_dir(profile, override, env):
     try:
         path = state_dir(profile, override, env=env, create=False)
     except WhatsAppError:
@@ -212,15 +245,19 @@ def check_creator(path):
 
 
 def run_checks(token_file=None, state_dir_override=None, profile=DEFAULT_PROFILE,
-               env=None, session=None, python_version=None):
-    """Every check, in the order a later one can lean on an earlier one."""
+               env=None, session=None, python_version=None, sources=None):
+    """Every check, in the order a later one can lean on an earlier one.
+
+    `sources` is the CLI's record of where each variable came from (the shell or
+    ./.env); given it, every line a variable decided says which. A library caller
+    leaves it out and gets the lines exactly as they were before ./.env was read."""
     env = os.environ if env is None else env
-    path, state = check_state_dir(profile, state_dir_override, env=env)
+    path, state = check_state_dir(profile, state_dir_override, env=env, sources=sources)
     return [
         check_python(python_version),
-        check_token(token_file, env=env, session=session),
-        *(check_key(provider, env=env, session=session) for provider in KEYED_PROVIDERS),
-        check_local(env),
+        check_token(token_file, env=env, session=session, sources=sources),
+        *(check_key(provider, env=env, session=session, sources=sources) for provider in KEYED_PROVIDERS),
+        check_local(env, sources=sources),
         state,
         check_creator(path),
     ]
