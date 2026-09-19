@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import wa_agent  # noqa: E402
-from wa_agent import cli, client, doctor, errors, local, media, ratelimit, state, store, text, transcribe  # noqa: E402
+from wa_agent import cli, client, doctor, envfile, errors, local, media, ratelimit, state, store, text, transcribe  # noqa: E402
 
 # What must never reach a user's terminal: our internals, or a provider's raw words.
 # Provider *names* are deliberately allowed here, unlike in hisab: a developer who has
@@ -59,15 +59,23 @@ def project_fields_regex(text):
     return found
 
 
-def run_cli(argv, env=None, session=None, sleep=None):
+# Every command reads ./.env from where it runs. The check runs from the repository,
+# whose own .env may hold a real token, so every run here looks in an empty directory
+# unless it names one: nothing in this check can ever read the owner's .env.
+EMPTY_CWD_HOLDER = tempfile.TemporaryDirectory()
+EMPTY_CWD = Path(EMPTY_CWD_HOLDER.name)
+
+
+def run_cli(argv, env=None, session=None, sleep=None, cwd=EMPTY_CWD):
     """cli.main in-process, returning (exit status, stdout, stderr).
 
-    `sleep` stands in for time.sleep so backoff is provable without waiting."""
+    `sleep` stands in for time.sleep so backoff is provable without waiting; `cwd`
+    is where ./.env is looked for."""
     out, err = io.StringIO(), io.StringIO()
     env = {} if env is None else env
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
-            status = cli.main(argv, env=env, session=session, sleep=sleep)
+            status = cli.main(argv, env=env, session=session, sleep=sleep, cwd=cwd)
         except SystemExit as exc:  # argparse exits on --help / bad usage
             status = exc.code if isinstance(exc.code, int) else 1
     return status, out.getvalue(), err.getvalue()
@@ -810,7 +818,9 @@ example = (ROOT / ".env.example").read_text(encoding="utf-8")
 # when a module that defines one of these names is refactored away
 for variable in (state.TOKEN_ENV, cli.DEBUG_ENV, "GEMINI_API_KEY", "OPENROUTER_API_KEY", "XDG_STATE_HOME", "XDG_DATA_HOME"):
     assert variable in example, f"{variable} is read by the code but missing from .env.example"
-assert "gitignored" in example and "source .env" in example, ".env.example must say how it is loaded"
+assert "gitignored" in example and "--no-env-file" in example and "always wins" in example, \
+    ".env.example must say that every command reads it, that the shell wins, and how to turn it off"
+assert "--no-env-file" in readme and "./.env" in readme, "the README must say ./.env is read and how to turn it off"
 assert not re.search(r"^[A-Z_]+=\S", example, re.MULTILINE), ".env.example must never carry a value"
 
 # the table of contents lists every section, and every entry points at a real heading
@@ -1492,6 +1502,219 @@ with tempfile.TemporaryDirectory() as home:
     assert status == 0 and not any("/media/" in c["url"] for c in session.calls), session.calls
 print("a photo lands in media/ with its path in the message; a failed download is delivered marked; --download with --transcribe fetches once and keeps it; no --download, no media request")
 
+# --------------------------------------------------------------------------- ./.env
+section("./.env")
+# the parser: what it takes, what it skips, and that a skipped line is only ever a number
+parsed, skipped = envfile.parse(
+    "# a comment\n"
+    "\n"
+    "PLAIN=one\n"
+    "export EXPORTED=two\n"
+    "  SPACED = three  \n"
+    "SINGLE='four # not a comment'\n"
+    'DOUBLE="five \\n $HOME"\n'
+    "INLINE=six # a comment\n"
+    "HASHED=se#ven\n"
+    "DUP=first\n"
+    "DUP=second\n"
+    "EMPTY=\n"
+    "BLANK=   \n"
+    "QUOTED_EMPTY=''\n"
+    "UNDONE=yes\n"
+    "UNDONE=\n"
+    "NOT A LINE\n"
+    "1BAD=x\n"
+    'OPEN="never closed\n'
+    "TRAIL='a' b\n"
+    "=nokey\n"
+    "export\n"
+)
+assert parsed == {"PLAIN": "one", "EXPORTED": "two", "SPACED": "three", "SINGLE": "four # not a comment",
+                  "DOUBLE": "five \\n $HOME", "INLINE": "six", "HASHED": "se#ven", "DUP": "second"}, parsed
+assert skipped == [17, 18, 19, 20, 21, 22], skipped
+assert envfile.parse("A=1\r\nB='2'\r\n") == ({"A": "1", "B": "2"}, []), "CRLF line endings read like LF"
+# a .env copied from .env.example and never filled in supplies nothing
+assert envfile.parse((ROOT / ".env.example").read_text(encoding="utf-8")) == ({}, []), "the example must parse clean and empty"
+
+# merge: the shell wins, a blank export is not a value, and os.environ is never touched
+shell = {"A": "shell-a", "B": "  ", "C": "shell-c"}
+merged, sources = envfile.merge(shell, {"A": "file-a", "B": "file-b", "D": "file-d"})
+assert merged == {"A": "shell-a", "B": "file-b", "C": "shell-c", "D": "file-d"}, merged
+assert sources == {"A": envfile.SHADOWED, "B": envfile.DOTENV, "C": envfile.SHELL, "D": envfile.DOTENV}, sources
+assert shell == {"A": "shell-a", "B": "  ", "C": "shell-c"}, "merge mutated the shell mapping"
+environ_before = dict(os.environ)
+
+TOKEN_FILE_SENTINEL = "dotenv-SENTINEL-tokenfile-5555"
+DOT_TOKEN = "dotenv-SENTINEL-token-1111"
+SHELL_TOKEN = "dotenv-SENTINEL-shelltoken-2222"
+DOT_GEMINI = "dotenv-SENTINEL-gemini-3333"
+DOT_OPENROUTER = "dotenv-SENTINEL-openrouter-4444"
+BAD_LINE = "dotenv-SENTINEL-badline-6666"
+ENV_SECRETS = (DOT_TOKEN, SHELL_TOKEN, DOT_GEMINI, DOT_OPENROUTER, BAD_LINE, TOKEN_FILE_SENTINEL)
+
+with tempfile.TemporaryDirectory() as tmp:
+    tmp = Path(tmp).resolve()
+    home = str(tmp / "home")
+    project = tmp / "project"
+    project.mkdir()
+
+    def write_env(*lines, where=project):
+        (where / ".env").write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+
+    def env_run(argv, env=None, session=None, where=project):
+        status, out, err = run_cli(argv, env={"HOME": home, **(env or {})}, session=session, cwd=where)
+        for secret in ENV_SECRETS:
+            assert secret not in out and secret not in err, f"a value reached the output: {argv} {out}{err}"
+        return status, out, err
+
+    def sdir(name):
+        return str(tmp / "state" / name)
+
+    def bearer(session):
+        return [c["headers"].get("Authorization") for c in session.calls if c.get("headers")]
+
+    # 1. the token only in ./.env: send --dry-run, send and recv all see it, and stderr says so
+    write_env(f"WHATSAPP_AGENT_TOKEN={DOT_TOKEN}")
+    status, out, err = env_run(["--state-dir", sdir("a"), "send", "hello", "--to", "user:9", "--dry-run"])
+    assert status == 0 and err == "env: WHATSAPP_AGENT_TOKEN from ./.env\n", (status, err)
+    session = FakeSession([FakeResponse(200, {"messages": [{"id": "wamid.dot"}]})])
+    status, out, err = env_run(["--state-dir", sdir("a"), "send", "hello", "--to", "user:9"], session=session)
+    assert status == 0 and out == "wamid.dot\n" and err == "env: WHATSAPP_AGENT_TOKEN from ./.env\n", (status, out, err)
+    assert bearer(session) == [f"Bearer {DOT_TOKEN}"], "send did not use the token from ./.env"
+    session = FakeSession([envelope(msg("wamid.dot-in"))])
+    status, dot_json, err = env_run(["--state-dir", sdir("dot"), "recv", "--json"], session=session)
+    assert status == 0 and err == "env: WHATSAPP_AGENT_TOKEN from ./.env\n", (status, err)
+    assert bearer(session) == [f"Bearer {DOT_TOKEN}"], "recv did not use the token from ./.env"
+
+    # recv --json stdout is byte-for-byte what the same batch gives with the token in the shell
+    session = FakeSession([envelope(msg("wamid.dot-in"))])
+    status, shell_json, shell_err = env_run(["--state-dir", sdir("shell"), "recv", "--json"],
+                                            env={"WHATSAPP_AGENT_TOKEN": DOT_TOKEN}, session=session, where=EMPTY_CWD)
+    assert status == 0 and shell_err == "" and shell_json == dot_json and dot_json.startswith('{"id": "wamid.dot-in"'), (shell_json, dot_json)
+
+    # 2. in both: the shell's value is used, and stderr says ./.env's was not
+    session = FakeSession([FakeResponse(200, {"messages": [{"id": "wamid.shell"}]})])
+    status, out, err = env_run(["--state-dir", sdir("a"), "send", "hello", "--to", "user:9"],
+                               env={"WHATSAPP_AGENT_TOKEN": SHELL_TOKEN}, session=session)
+    assert status == 0 and bearer(session) == [f"Bearer {SHELL_TOKEN}"], bearer(session)
+    assert err == "env: WHATSAPP_AGENT_TOKEN from the shell (./.env also sets it, not used)\n", err
+    # a blank export is not a value: ./.env fills it
+    session = FakeSession([FakeResponse(200, {"messages": [{"id": "wamid.blank"}]})])
+    status, out, err = env_run(["--state-dir", sdir("a"), "send", "hello", "--to", "user:9"],
+                               env={"WHATSAPP_AGENT_TOKEN": "  "}, session=session)
+    assert status == 0 and bearer(session) == [f"Bearer {DOT_TOKEN}"] and err == "env: WHATSAPP_AGENT_TOKEN from ./.env\n", err
+
+    # the line lists every reported name set anywhere, in .env.example's order, once
+    write_env(f"GEMINI_API_KEY={DOT_GEMINI}", f"WHATSAPP_AGENT_TOKEN={DOT_TOKEN}", "UNRELATED=x")
+    status, out, err = env_run(["--state-dir", sdir("a"), "send", "hello", "--to", "user:9", "--dry-run"],
+                               env={"GEMINI_API_KEY": "shell-gemini", "XDG_DATA_HOME": str(tmp / "data")})
+    assert err == ("env: WHATSAPP_AGENT_TOKEN from ./.env; GEMINI_API_KEY from the shell (./.env also sets it, not used); "
+                   "XDG_DATA_HOME from the shell\n"), err
+    assert "UNRELATED" not in err
+
+    # nothing from ./.env that matters, or no ./.env at all: stderr is exactly what it was before
+    argv = ["--state-dir", sdir("a"), "send", "hello", "--to", "user:9", "--dry-run"]
+    baseline = run_cli(argv, env={"HOME": home, "WHATSAPP_AGENT_TOKEN": SHELL_TOKEN}, cwd=EMPTY_CWD)
+    assert baseline[0] == 0 and baseline[2] == "", baseline
+    write_env("UNRELATED=x", "# WHATSAPP_AGENT_TOKEN=commented", "WHATSAPP_AGENT_TOKEN=")
+    assert env_run(argv, env={"WHATSAPP_AGENT_TOKEN": SHELL_TOKEN}) == baseline, "an irrelevant .env changed the output"
+
+    # 3. --no-env-file is the old behaviour exactly: the file is not read, and nothing is said
+    write_env(f"WHATSAPP_AGENT_TOKEN={DOT_TOKEN}", f"WHATSAPP_AGENT_DEBUG=1", "NOT A LINE")
+    for command in (["send", "hello", "--to", "user:9"], ["recv", "--json"], ["send", "hello", "--to", "user:9", "--dry-run"]):
+        argv = ["--no-env-file", "--state-dir", sdir("off"), *command]
+        off = env_run(argv, session=FakeSession([]))
+        none = env_run(argv, session=FakeSession([]), where=EMPTY_CWD)
+        assert off == none, (command, off, none)
+    off = env_run(["--no-env-file", "--state-dir", sdir("off"), "send", "hello", "--to", "user:9"], session=FakeSession([]))
+    assert off[0] == errors.CODES["no_token"].exit_status and "env:" not in off[2] and "warning" not in off[2], off
+    assert "--no-env-file" in run_cli(["--help"])[1]
+
+    # 4. --token-file beats a token only ./.env supplies; a token in the shell still beats --token-file
+    write_env(f"WHATSAPP_AGENT_TOKEN={DOT_TOKEN}")
+    token_file = tmp / "token"
+    token_file.write_text(TOKEN_FILE_SENTINEL + "\n")
+    session = FakeSession([FakeResponse(200, {"messages": [{"id": "wamid.tf"}]})])
+    status, out, err = env_run(["--token-file", str(token_file), "--state-dir", sdir("a"), "send", "hi", "--to", "user:9"],
+                               session=session)
+    assert status == 0 and bearer(session) == [f"Bearer {TOKEN_FILE_SENTINEL}"], bearer(session)
+    assert err == "env: WHATSAPP_AGENT_TOKEN from ./.env, not used (--token-file given)\n", err
+    session = FakeSession([FakeResponse(200, {"messages": [{"id": "wamid.tf2"}]})])
+    status, out, err = env_run(["--token-file", str(token_file), "--state-dir", sdir("a"), "send", "hi", "--to", "user:9"],
+                               env={"WHATSAPP_AGENT_TOKEN": SHELL_TOKEN}, session=session)
+    assert bearer(session) == [f"Bearer {SHELL_TOKEN}"], "a token exported in the shell still beats --token-file"
+
+    # 5. the provider is never inferred: only an OpenRouter key in ./.env, and gemini is still asked for
+    note = tmp / "note.ogg"
+    note.write_bytes(b"OggS" + b"0" * 64)
+    write_env(f"OPENROUTER_API_KEY={DOT_OPENROUTER}")
+    session = FakeSession([])
+    status, out, err = env_run(["transcribe", str(note)], session=session)
+    assert status == errors.CODES["no_transcription_key"].exit_status and "GEMINI_API_KEY" in err, (status, err)
+    assert err.startswith("env: OPENROUTER_API_KEY from ./.env\n") and not session.calls, (err, session.calls)
+    # a --key-env name is found in ./.env and reported
+    write_env(f"MY_TRANSCRIBE_KEY={DOT_GEMINI}")
+    session = FakeSession([FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]})])
+    status, out, err = env_run(["transcribe", str(note), "--key-env", "MY_TRANSCRIBE_KEY"], session=session)
+    assert status == 0 and out == "hello\n" and err == "env: MY_TRANSCRIBE_KEY from ./.env\n", (status, out, err)
+
+    # 6. a line it cannot read is named by number and skipped; the line itself never appears
+    write_env("# header", f"WHATSAPP_AGENT_TOKEN={DOT_TOKEN}", f"NOT A LINE {BAD_LINE}", f"KEY='{BAD_LINE}")
+    status, out, err = env_run(["--state-dir", sdir("a"), "send", "x", "--to", "user:9", "--dry-run"])
+    assert status == 0 and err == ("warning: ./.env line 3 is not KEY=VALUE; skipped\n"
+                                   "warning: ./.env line 4 is not KEY=VALUE; skipped\n"
+                                   "env: WHATSAPP_AGENT_TOKEN from ./.env\n"), err
+    # a BOM is dropped, so the first variable is still found
+    (project / ".env").write_bytes(b"\xef\xbb\xbf" + f"WHATSAPP_AGENT_TOKEN={DOT_TOKEN}\n".encode())
+    assert env_run(["--state-dir", sdir("a"), "send", "x", "--to", "user:9", "--dry-run"])[2] == "env: WHATSAPP_AGENT_TOKEN from ./.env\n"
+    # a .env that cannot be read warns and the command carries on with the shell
+    (project / ".env").write_bytes(b"WHATSAPP_AGENT_TOKEN=\xff\xfe\n")
+    status, out, err = env_run(["--state-dir", sdir("a"), "send", "x", "--to", "user:9", "--dry-run"])
+    assert status == 0 and err == "warning: ./.env is not UTF-8; ignored\n", err
+    unreadable = tmp / "unreadable"
+    (unreadable / ".env").mkdir(parents=True)
+    status, out, err = env_run(["--state-dir", sdir("a"), "send", "x", "--to", "user:9", "--dry-run"], where=unreadable)
+    assert status == 0 and err == "warning: ./.env cannot be read; ignored\n", err
+
+    # 7. no value reaches stdout or stderr, with the debug switch in the shell or in ./.env, on a
+    #    run that fails and prints a traceback (env_run sweeps every run above for the sentinels too)
+    dead = [FakeResponse(401, {"error": {"code": 190}})]
+    for debug_in_shell in (True, False):
+        write_env(f"WHATSAPP_AGENT_TOKEN={DOT_TOKEN}", f"GEMINI_API_KEY={DOT_GEMINI}", f"BROKEN {BAD_LINE}",
+                  *([] if debug_in_shell else ["WHATSAPP_AGENT_DEBUG=1"]))
+        shell_env = {"WHATSAPP_AGENT_DEBUG": "1"} if debug_in_shell else {}
+        for command in (["recv", "--json"], ["send", "hi", "--to", "user:9"]):
+            status, out, err = env_run(["--state-dir", sdir("dbg"), *command], env=shell_env, session=FakeSession(list(dead)))
+            assert status == errors.CODES["auth"].exit_status and "Traceback" in err, (debug_in_shell, command, status, err)
+        status, out, err = env_run(["--state-dir", sdir("dbg"), "send", "x", "--to", "user:9", "--dry-run"], env=shell_env)
+        assert status == 0
+
+assert dict(os.environ) == environ_before, "reading ./.env touched os.environ"
+
+# 8. the library never reads ./.env: not on import, not when resolving the token
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / ".env").write_text(f"WHATSAPP_AGENT_TOKEN={DOT_TOKEN}\n")
+    probe = ("import sys\n"
+             "opened = []\n"
+             "sys.addaudithook(lambda event, args: opened.append(str(args[0])) if event == 'open' and args and str(args[0]).endswith('.env') else None)\n"
+             "import wa_agent, wa_agent.cli, wa_agent.envfile, wa_agent.doctor\n"
+             "from wa_agent.state import resolve_token\n"
+             "from wa_agent.errors import WhatsAppError\n"
+             "try:\n"
+             "    resolve_token()\n"
+             "    raise SystemExit('the library found a token')\n"
+             "except WhatsAppError as exc:\n"
+             "    assert exc.code == 'no_token', exc.code\n"
+             "assert not opened, opened\n")
+    clean = {k: v for k, v in os.environ.items() if k not in cli.REPORTED}
+    proc = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=tmp,
+                          env={**clean, "PYTHONPATH": str(ROOT)})
+    assert proc.returncode == 0, proc.stderr
+    assert DOT_TOKEN not in proc.stdout + proc.stderr
+print("./.env fills gaps and the shell wins (a blank export is a gap); the env: line names each source and prints only when ./.env mattered; "
+      "recv --json unchanged; --no-env-file is the old behaviour; --token-file beats ./.env; the provider is never inferred; "
+      "bad lines are skipped by number; no value printed, debug or not; the library never reads the file")
+
 # --------------------------------------------------------------------------- doctor
 section("doctor")
 
@@ -1562,7 +1785,7 @@ with tempfile.TemporaryDirectory() as tmp:
     (sd / "creator").write_text("user:demo-1")
 
     def run_doctor(session, *, state=sd, extra=(), token=DOC_TOKEN, gemini=DOC_GEMINI, openrouter=DOC_OPENROUTER,
-                   debug=False, argv_state=True):
+                   debug=False, argv_state=True, cwd=EMPTY_CWD):
         env = {"HOME": str(home)}
         for name, value in (("WHATSAPP_AGENT_TOKEN", token), ("GEMINI_API_KEY", gemini), ("OPENROUTER_API_KEY", openrouter)):
             if value is not None:
@@ -1570,7 +1793,7 @@ with tempfile.TemporaryDirectory() as tmp:
         if debug:
             env["WHATSAPP_AGENT_DEBUG"] = "1"
         argv = (["--state-dir", str(state)] if argv_state else []) + list(extra) + ["doctor"]
-        status, out, err = run_cli(argv, env=env, session=session)
+        status, out, err = run_cli(argv, env=env, session=session, cwd=cwd)
         # the invariants that hold in every scenario, so no scenario can forget them
         assert not any("/updates" in c["url"] for c in session.calls), f"doctor polled: {[c['url'] for c in session.calls]}"
         assert all(c["verb"] == "GET" for c in session.calls), [c["verb"] for c in session.calls]
@@ -1832,7 +2055,64 @@ with tempfile.TemporaryDirectory() as tmp:
                 assert "Traceback" in err, "debug should add a traceback, which is still free of secrets"
     print("the token and both provider keys never appear in stdout or stderr: pass, dead, unreachable and unexpected, with and without WHATSAPP_AGENT_DEBUG=1")
 
-    # 8. the python line, and the floor agrees with the packaging
+    # 8. ./.env: every line a variable decided says where it came from; --no-env-file is the old report
+    project = tmp / "project"
+    project.mkdir()
+    DOT_ONLY = "doctor-dotenv-SECRET-dddd4444"
+
+    def doctor_env(*lines):
+        (project / ".env").write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+
+    doctor_env(f"WHATSAPP_AGENT_TOKEN={DOC_TOKEN}", f"GEMINI_API_KEY={DOC_GEMINI}")
+    session = DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY)
+    status, out, err = run_doctor(session, token=None, gemini=None, cwd=project)
+    checks = doctor_lines(out)[0]
+    assert status == 0 and checks[1][2] == "accepted by the platform (WHATSAPP_AGENT_TOKEN from ./.env)", checks[1]
+    assert checks[2][2] == "GEMINI_API_KEY from ./.env accepted by Gemini", checks[2]
+    assert checks[3][2] == "OPENROUTER_API_KEY from the shell accepted by OpenRouter", checks[3]
+    assert session.to(WA_HOST)[0]["headers"] == {"Authorization": f"Bearer {DOC_TOKEN}"}
+    assert err == ("env: WHATSAPP_AGENT_TOKEN from ./.env; GEMINI_API_KEY from ./.env; "
+                   "OPENROUTER_API_KEY from the shell\n"), err
+
+    # in both: the shell's token is the one probed, and the line says ./.env's was not used
+    doctor_env(f"WHATSAPP_AGENT_TOKEN={DOT_ONLY}")
+    session = DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY)
+    status, out, err = run_doctor(session, cwd=project)
+    token_line = doctor_lines(out)[0][1]
+    assert token_line[2] == "accepted by the platform (WHATSAPP_AGENT_TOKEN from the shell; ./.env also sets it, not used)", token_line
+    assert session.to(WA_HOST)[0]["headers"] == {"Authorization": f"Bearer {DOC_TOKEN}"}
+    assert DOT_ONLY not in out + err
+
+    # XDG_STATE_HOME from ./.env decides the state dir, and the line says so; nothing is created
+    xdg = tmp / "xdg-from-dotenv"
+    doctor_env(f"XDG_STATE_HOME={xdg}")
+    status, out, err = run_doctor(DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY), argv_state=False, cwd=project)
+    state_line = doctor_lines(out)[0][5]
+    assert state_line[2].startswith(str(xdg / "wa-agent" / "default")) and state_line[2].endswith("(XDG_STATE_HOME from ./.env)"), state_line
+    assert not xdg.exists(), "doctor created the state directory"
+
+    # nothing anywhere: the line and its fix both name ./.env
+    status, out, err = run_doctor(DoctorSession(), token=None, gemini=None, openrouter=None)
+    checks, fixes = doctor_lines(out)
+    assert checks[1][2] == "no token in WHATSAPP_AGENT_TOKEN (the shell or ./.env) and no --token-file", checks[1]
+    assert "put it in ./.env" in fixes[1], fixes
+    assert checks[2][2] == "GEMINI_API_KEY is not set in the shell or ./.env; only needed for --provider gemini", checks[2]
+
+    # --no-env-file: the file is not read, and the report is word for word the one before ./.env existed
+    doctor_env(f"WHATSAPP_AGENT_TOKEN={DOT_ONLY}", f"GEMINI_API_KEY={DOT_ONLY}")
+    off = run_doctor(DoctorSession(), token=None, gemini=None, openrouter=None, extra=["--no-env-file"], cwd=project)
+    none = run_doctor(DoctorSession(), token=None, gemini=None, openrouter=None, extra=["--no-env-file"])
+    assert off == none and off[0] == 15 and DOT_ONLY not in off[1] + off[2], (off, none)
+    checks, fixes = doctor_lines(off[1])
+    assert checks[1][2] == "no token in WHATSAPP_AGENT_TOKEN and no --token-file", checks[1]
+    assert fixes[1] == "export WHATSAPP_AGENT_TOKEN, or pass --token-file PATH before the subcommand", fixes
+    assert checks[2][2] == "GEMINI_API_KEY is not set; only needed for --provider gemini", checks[2]
+    library = doctor.render(doctor.run_checks(state_dir_override=str(sd), env={"HOME": str(home)}, session=DoctorSession()))
+    assert "\n".join(library) + "\n" == off[1], "the library's report and --no-env-file's disagree"
+    print("./.env: the token, a key and XDG_STATE_HOME each say where they came from; a shadowed token says the shell won; "
+          "--no-env-file gives the report the library gives, word for word")
+
+    # 9. the python line, and the floor agrees with the packaging
     requires = re.search(r'^requires-python\s*=\s*">=(\d+)\.(\d+)"', (ROOT / "pyproject.toml").read_text(encoding="utf-8"), re.MULTILINE)
     assert requires, "requires-python is no longer a simple >=X.Y"
     assert doctor.MIN_PYTHON == (int(requires.group(1)), int(requires.group(2))), "doctor's floor and requires-python disagree"
@@ -1938,12 +2218,12 @@ print("probe_token: 404 and 2xx accept; 401 and 400/100 are AuthError; 429/5xx/t
 
 # --------------------------------------------------------------------------- module entry point
 section("module entry point")
-proc = subprocess.run([sys.executable, "-m", "wa_agent", "--version"], capture_output=True, text=True, cwd=ROOT,
+proc = subprocess.run([sys.executable, "-m", "wa_agent", "--version"], capture_output=True, text=True, cwd=EMPTY_CWD,
                       env={**os.environ, "PYTHONPATH": str(ROOT)})
 assert proc.returncode == 0, proc.stderr
 assert installed in proc.stdout, proc.stdout
 # a command that needs no state and no network: this proves the entry point, not a feature
-proc = subprocess.run([sys.executable, "-m", "wa_agent", "errors"], capture_output=True, text=True, cwd=ROOT,
+proc = subprocess.run([sys.executable, "-m", "wa_agent", "errors"], capture_output=True, text=True, cwd=EMPTY_CWD,
                       env={**os.environ, "PYTHONPATH": str(ROOT)})
 assert proc.returncode == 0, proc.stderr
 assert "platform_rejected" in proc.stdout, proc.stdout[:200]

@@ -9,7 +9,7 @@ WHATSAPP_AGENT_DEBUG is set and never otherwise.
 Exit statuses, stable from here on — a script may switch on them:
 
     2   bad_usage             wrong arguments (argparse exits 2 for the same reason)
-    3   no_token              no token in the environment and none in --token-file
+    3   no_token              no token in the environment (or ./.env, for the CLI) and none in --token-file
     4   auth                  the platform rejected the token itself; retrying never helps
     5   not_implemented       a subcommand that exists but has not landed yet
     6   platform_rejected     the platform refused this request; a retry will be refused too
@@ -41,7 +41,7 @@ Error = namedtuple("Error", "exit_status message retry")
 
 CODES = {
     "bad_usage": Error(2, "bad usage", False),
-    "no_token": Error(3, "no token: set WHATSAPP_AGENT_TOKEN, or pass --token-file PATH", False),
+    "no_token": Error(3, "no token: set WHATSAPP_AGENT_TOKEN (the command line also reads ./.env), or pass --token-file PATH", False),
     "auth": Error(4, "the platform rejected this token; it will not become valid on retry", False),
     "not_implemented": Error(5, "this command has not landed yet", False),
     "platform_rejected": Error(6, "the platform refused this request; retrying will not help", False),

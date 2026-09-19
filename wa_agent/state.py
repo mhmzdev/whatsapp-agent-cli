@@ -5,6 +5,10 @@ directory. A project folder is something layer B will care about; this package
 keeps its cursor, its message store and its downloaded media under the user's
 XDG state directory, so a program that reads a folder can never read this
 package's memory of what was said.
+
+Nothing here reads `./.env`. The command-line tool fills the environment's gaps from
+it before calling these functions (see `envfile.py`); a program that imports the
+library passes its own environment, or gets `os.environ`, and no file is read.
 """
 
 import os
