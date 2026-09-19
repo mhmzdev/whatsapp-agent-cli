@@ -8,7 +8,7 @@
 Send and receive WhatsApp messages from a script, a cron job, a git hook, or a coding agent with shell access. It handles the parts that are tedious to get right — the long-poll and its cursor, per-method rate limits, the 4,096-character send cap, the two-hop media fetch, and an error table where one code means "back off" and another means "this token is dead, stop".
 
 ```bash
-whatsapp-agent send "deploy finished, 3 tests failing"
+wa-agent send "deploy finished, 3 tests failing"
 ```
 
 It knows nothing about coding agents, folders, permissions or models. It moves messages.
@@ -16,16 +16,16 @@ It knows nothing about coding agents, folders, permissions or models. It moves m
 ## Install
 
 ```bash
-pip install whatsapp-agent
+pip install wa-agent
 ```
 
-The distribution is `whatsapp-agent`, the command is `whatsapp-agent`, the module is `whatsapp_agent`. (This repository is named `whatsapp-agent-cli`, which was already taken on PyPI by an unrelated project.)
+The package, the command and the module are all `wa-agent` / `wa_agent`. (This repository is named `whatsapp-agent-cli`; that name and `whatsapp-agent` both belong to unrelated projects on PyPI.)
 
 Transcription needs no extra install — only a key, because it is an ordinary HTTP call:
 
 ```bash
 export GEMINI_API_KEY='…'
-whatsapp-agent transcribe voice-note.ogg
+wa-agent transcribe voice-note.ogg
 ```
 
 ## Get a token
@@ -33,23 +33,23 @@ whatsapp-agent transcribe voice-note.ogg
 In WhatsApp: **Settings → Agents → Create an agent → Chat info → API key.** An agent may only message its own creator — you — which is why there is no recipient management here.
 
 ```bash
-export WHATSAPP_AGENT_TOKEN='…'        # or: whatsapp-agent --token-file ~/.wa-token …
+export WHATSAPP_AGENT_TOKEN='…'        # or: wa-agent --token-file ~/.wa-token …
 ```
 
 ## Use it
 
 ```bash
 # say something to yourself
-whatsapp-agent send "the backup finished"
+wa-agent send "the backup finished"
 
 # read what arrives, one JSON object per line, until you stop it
-whatsapp-agent recv --follow --json
+wa-agent recv --follow --json
 
 # attach a file; the text becomes its caption
-whatsapp-agent send "this week's numbers" --file chart.png
+wa-agent send "this week's numbers" --file chart.png
 
 # fetch something someone texted you, and open it
-open "$(whatsapp-agent media get <media-id>)"
+open "$(wa-agent media get <media-id>)"
 ```
 
 The first `recv` records who you are, after which `send` needs no `--to`.
@@ -79,14 +79,14 @@ Without a key, `recv --transcribe` warns once and delivers voice notes marked `t
 Global options — `--token-file`, `--state-dir`, `--profile` — go **before** the subcommand, as in git:
 
 ```bash
-whatsapp-agent --profile work recv --follow     # yes
-whatsapp-agent recv --follow --profile work     # no: unrecognized argument
+wa-agent --profile work recv --follow     # yes
+wa-agent recv --follow --profile work     # no: unrecognized argument
 ```
 
 ## Use it from Python
 
 ```python
-from whatsapp_agent import WhatsApp, Store, WhatsAppError
+from wa_agent import WhatsApp, Store, WhatsAppError
 
 client = WhatsApp(token)
 for sent in client.send_iter("user:123", "**done** in 40s"):
@@ -101,7 +101,7 @@ for message in messages:
 
 ## Where it keeps things
 
-Nothing is written into your working directory. State lives at `$XDG_STATE_HOME/whatsapp-agent/<profile>/` (or `~/.local/state/…`), holding the poll cursor, the message log and downloaded media. `--state-dir` moves it; `--profile` keeps two agents apart.
+Nothing is written into your working directory. State lives at `$XDG_STATE_HOME/wa-agent/<profile>/` (or `~/.local/state/…`), holding the poll cursor, the message log and downloaded media. `--state-dir` moves it; `--profile` keeps two agents apart.
 
 **One poller per token.** The platform allows a single long-poll per agent and answers `409` when a second one takes the cursor, so `recv` exits rather than silently competing for your messages.
 
@@ -114,7 +114,7 @@ error [platform_rejected]: the platform refused this request; retrying will not 
 detail: POST /messages: HTTP 400 error.code 131009 …
 ```
 
-`whatsapp-agent errors` lists them all. [`docs/errors.md`](docs/errors.md) says what to do about each and which are worth retrying — the short version is that exit `7` is, and `4` and `6` never are.
+`wa-agent errors` lists them all. [`docs/errors.md`](docs/errors.md) says what to do about each and which are worth retrying — the short version is that exit `7` is, and `4` and `6` never are.
 
 ## What this is part of
 

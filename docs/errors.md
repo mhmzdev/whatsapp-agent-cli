@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: Exit codes
-description: Every way whatsapp-agent can fail, what it means, and whether retrying helps.
+description: Every way wa-agent can fail, what it means, and whether retrying helps.
 tags: [errors, reference]
 timestamp: 2026-09-17T00:00:00Z
 ---
@@ -17,13 +17,13 @@ detail: POST /messages: HTTP 400 error.code 131009 …
 
 The first line is fixed text you can search for. The `detail:` line is for a human reading their own terminal — it carries the platform's own words, and it is the only place an HTTP body ever appears. `WHATSAPP_AGENT_DEBUG=1` adds a traceback.
 
-`whatsapp-agent errors` prints this table from the installed package, so it is always the version you are running.
+`wa-agent errors` prints this table from the installed package, so it is always the version you are running.
 
 ## The table
 
 | Code | Exit | Retry? | What happened | What to do |
 |---|---|---|---|---|
-| `bad_usage` | 2 | no | The arguments do not make sense: a missing file, an unguessable file type, a profile that looks like a path, or a `send` with nothing to send | Read the message; it names the argument. Remember that global options go **before** the subcommand: `whatsapp-agent --state-dir X recv` |
+| `bad_usage` | 2 | no | The arguments do not make sense: a missing file, an unguessable file type, a profile that looks like a path, or a `send` with nothing to send | Read the message; it names the argument. Remember that global options go **before** the subcommand: `wa-agent --state-dir X recv` |
 | `no_token` | 3 | no | No token in `WHATSAPP_AGENT_TOKEN`, and either no `--token-file` or a file that is missing or empty | Export the token, or point `--token-file` at a file containing it and nothing else |
 | `auth` | 4 | **never** | The platform rejected the token itself — HTTP 401, or 400 with `error.code` 100 | Get a fresh token from the WhatsApp app (Settings → Agents → your agent → API key). A retry with the same token will fail identically, so a long-running loop should exit on this |
 | `not_implemented` | 5 | no | The subcommand exists but its feature has not landed yet; the message names the issue tracking it | Follow the issue, or use another command |
@@ -45,7 +45,7 @@ Exit `130` is the conventional one for Ctrl-C, not a failure: `recv --follow` us
 The only distinction most callers need:
 
 ```bash
-whatsapp-agent send "deploy finished"
+wa-agent send "deploy finished"
 case $? in
   0)  ;;                      # sent
   7)  sleep 30; retry ;;      # the platform, not you
@@ -56,4 +56,4 @@ esac
 
 ## Adding a code
 
-One row in `CODES` in [`whatsapp_agent/errors.py`](../whatsapp_agent/errors.py), with an exit status nothing else uses, and one row here. `python3 tests/smoke.py` fails and names the code if either is missing, or if a row here names a code that does not exist.
+One row in `CODES` in [`wa_agent/errors.py`](../wa_agent/errors.py), with an exit status nothing else uses, and one row here. `python3 tests/smoke.py` fails and names the code if either is missing, or if a row here names a code that does not exist.

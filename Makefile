@@ -18,7 +18,7 @@ PYTHON ?= $(shell for p in python3.13 python3.12 python3.11 python3.10 python3; 
 VENV := .venv
 PY := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
-CLI := $(VENV)/bin/whatsapp-agent
+CLI := $(VENV)/bin/wa-agent
 
 .PHONY: help dev check live up clean
 

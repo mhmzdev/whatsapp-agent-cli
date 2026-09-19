@@ -27,12 +27,12 @@ docs/            brainstorm/, specs/, exec-plans/{backlog,active,completed,super
 ```
 
 ```
-whatsapp_agent/
+wa_agent/
   __init__.py    the package version, and the names a dependent imports
   errors.py      THE failure registry: every code, its message and its exit status; AuthError is permanent
   state.py       where the token comes from (env, then --token-file) and where state lives (XDG, never the cwd)
   cli.py         the argparse surface; subcommands stay stubs until their own ticket lands
-  __main__.py    python -m whatsapp_agent
+  __main__.py    python -m wa_agent
 tests/smoke.py   the check: no network, no token, no writes outside a temp dir
 ```
 
@@ -75,7 +75,7 @@ Artifacts: `docs/brainstorm/` · `docs/specs/` · `docs/exec-plans/{backlog,acti
 repo: mhmzdev/whatsapp-agent-cli
 trunk: develop                   # PRs target this; never push to it directly
 release_branch: main             # develop -> main is the release; release.yml publishes to PyPI
-dist_name: whatsapp-agent        # PyPI distribution (whatsapp-agent-cli was taken); command whatsapp-agent
+dist_name: wa-agent             # PyPI name, import wa_agent, command wa-agent — whatsapp-agent-cli and whatsapp-agent are both taken
 issues_repo: mhmzdev/whatsapp-agent-cli
 project_board: 2                 # owner mhmzdev — "WA-CLI"
 board_fields:

@@ -58,7 +58,7 @@ jobs:
         run: |
           python -m venv /tmp/verify
           /tmp/verify/bin/pip install dist/*.whl
-          /tmp/verify/bin/whatsapp-agent --version
+          /tmp/verify/bin/wa-agent --version
 
       # PyPI first: if this fails there is no tag and no Release, so the next
       # push to main retries the same version cleanly.

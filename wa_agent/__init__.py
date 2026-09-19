@@ -1,7 +1,7 @@
 """A client for the WhatsApp Agent Platform — library first, with a CLI on top.
 
-    import whatsapp_agent            # from Python
-    whatsapp-agent send "hello"      # from a shell
+    import wa_agent            # from Python
+    wa-agent send "hello"      # from a shell
 
 This package owns the transport and nothing else: tokens, the poll cursor, the
 message store, rate limits, the send cap, media and transcription. It knows
@@ -16,7 +16,7 @@ from .state import resolve_token, state_dir
 from .store import Store
 
 try:
-    __version__ = _version("whatsapp-agent")
+    __version__ = _version("wa-agent")
 except PackageNotFoundError:  # a source checkout that was never installed
     __version__ = "0.0.0+dev"
 

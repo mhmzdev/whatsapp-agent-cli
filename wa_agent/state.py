@@ -13,7 +13,7 @@ from pathlib import Path
 from .errors import WhatsAppError
 
 TOKEN_ENV = "WHATSAPP_AGENT_TOKEN"
-APP_DIR = "whatsapp-agent"
+APP_DIR = "wa-agent"
 DEFAULT_PROFILE = "default"
 
 
@@ -46,8 +46,8 @@ def resolve_token(token_file=None, env=None):
 def state_dir(profile=DEFAULT_PROFILE, override=None, env=None, create=True):
     """The directory this package keeps its state in, created 0700 on first use.
 
-    Resolution: `--state-dir` if given, else `$XDG_STATE_HOME/whatsapp-agent/<profile>`,
-    else `~/.local/state/whatsapp-agent/<profile>`. Never derived from the current
+    Resolution: `--state-dir` if given, else `$XDG_STATE_HOME/wa-agent/<profile>`,
+    else `~/.local/state/wa-agent/<profile>`. Never derived from the current
     working directory — that is the point of this function, and tests/smoke.py
     asserts it by resolving from a temporary directory.
     """

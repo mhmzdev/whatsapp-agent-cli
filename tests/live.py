@@ -24,7 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / ".live-state"
-CLI = ROOT / ".venv" / "bin" / "whatsapp-agent"
+CLI = ROOT / ".venv" / "bin" / "wa-agent"
 
 GREEN, YELLOW, RED, DIM, OFF = "\033[32m", "\033[33m", "\033[31m", "\033[2m", "\033[0m"
 
@@ -49,7 +49,7 @@ def load_dotenv(path=ROOT / ".env"):
 def run(*args, env=None, check=False):
     """Run the CLI, echo what was run, return (status, stdout, stderr)."""
     cmd = [str(CLI), "--state-dir", str(STATE), *args]
-    print(f"{DIM}$ whatsapp-agent {' '.join(_shown(a) for a in args)}{OFF}")
+    print(f"{DIM}$ wa-agent {' '.join(_shown(a) for a in args)}{OFF}")
     proc = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, **(env or {})})
     for line in proc.stdout.splitlines():
         print(f"  {line}")

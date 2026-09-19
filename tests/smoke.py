@@ -25,8 +25,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import whatsapp_agent  # noqa: E402
-from whatsapp_agent import cli, client, errors, media, ratelimit, state, store, text, transcribe  # noqa: E402
+import wa_agent  # noqa: E402
+from wa_agent import cli, client, errors, media, ratelimit, state, store, text, transcribe  # noqa: E402
 
 # What must never reach a user's terminal: our internals, or a provider's raw words.
 # Provider *names* are deliberately allowed here, unlike in hisab: a developer who has
@@ -83,10 +83,10 @@ else:
     real = tomllib.loads(raw)["project"]
     assert {k: real[k] for k in pyproject} == pyproject, f"{pyproject} disagrees with tomllib {real}"
     parsed_by = "regex, agreeing with tomllib"
-assert pyproject["name"] == "whatsapp-agent", pyproject["name"]
+assert pyproject["name"] == "wa-agent", pyproject["name"]
 declared = pyproject["version"]
 assert declared.count(".") == 2 and all(p.isdigit() for p in declared.split(".")), declared
-installed = whatsapp_agent.__version__
+installed = wa_agent.__version__
 assert installed == declared or installed == "0.0.0+dev", f"{installed} vs {declared}"
 status, out, err = run_cli(["--version"])
 assert status == 0 and installed in out, (status, out)
@@ -139,13 +139,13 @@ with tempfile.TemporaryDirectory() as cwd, tempfile.TemporaryDirectory() as home
     try:
         env = {"HOME": home}
         path = state.state_dir(env=env)
-        assert path == Path(home).resolve() / ".local" / "state" / "whatsapp-agent" / "default", path
+        assert path == Path(home).resolve() / ".local" / "state" / "wa-agent" / "default", path
         assert path.is_dir() and (path.stat().st_mode & 0o777) == 0o700, oct(path.stat().st_mode)
         assert Path(cwd).resolve() not in path.parents, f"{path} is inside the working directory"
         assert state.state_dir(env=env) == path, "resolving twice must not fail on an existing directory"
 
         xdg = Path(home) / "xdg"
-        assert state.state_dir(env={"HOME": home, "XDG_STATE_HOME": str(xdg)}) == (xdg / "whatsapp-agent" / "default").resolve()
+        assert state.state_dir(env={"HOME": home, "XDG_STATE_HOME": str(xdg)}) == (xdg / "wa-agent" / "default").resolve()
         assert state.state_dir(profile="work", env=env).name == "work"
         override = Path(home) / "elsewhere"
         assert state.state_dir(override=str(override), env=env) == override.resolve()
@@ -769,27 +769,27 @@ readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
 # the public API the Python example promises
 for name in ("WhatsApp", "Store", "WhatsAppError", "Sent", "classify", "CODES"):
-    assert name in whatsapp_agent.__all__ and hasattr(whatsapp_agent, name), f"README imports {name}, package does not export it"
+    assert name in wa_agent.__all__ and hasattr(wa_agent, name), f"README imports {name}, package does not export it"
 for method in ("send_iter", "poll", "download", "upload", "send_media", "typing"):
-    assert hasattr(whatsapp_agent.WhatsApp, method), f"README documents WhatsApp.{method}, which does not exist"
+    assert hasattr(wa_agent.WhatsApp, method), f"README documents WhatsApp.{method}, which does not exist"
 
-# every whatsapp-agent command shown in the README really exists
-shown = set(re.findall(r"^whatsapp-agent (?:--\S+ \S+ )*([a-z]+)", readme, re.MULTILINE))
+# every wa-agent command shown in the README really exists
+shown = set(re.findall(r"^wa-agent (?:--\S+ \S+ )*([a-z]+)", readme, re.MULTILINE))
 shown |= set(re.findall(r"^\| `([a-z]+)[ <`]", readme, re.MULTILINE))
 help_text = run_cli(["--help"])[1]
 for command in sorted(shown):
-    assert command in help_text, f"README shows `whatsapp-agent {command}`, which --help does not list"
+    assert command in help_text, f"README shows `wa-agent {command}`, which --help does not list"
 assert {"send", "recv", "media", "errors"} <= shown, f"the README stopped documenting a command: {shown}"
 
 # claims that would quietly rot
-assert f'pip install whatsapp-agent' in readme, "the README must name the distribution, not the repo"
+assert f'pip install wa-agent' in readme, "the README must name the distribution, not the repo"
 assert "GEMINI_API_KEY" in readme, "transcription needs a key and the README must say which"
 assert state.TOKEN_ENV in readme, "the token env var must be named"
-assert "docs/errors.md" in readme and "whatsapp-agent errors" in readme
+assert "docs/errors.md" in readme and "wa-agent errors" in readme
 # markdown emphasis sits inside the sentence, so match on the words, not the literal
 assert re.search(r"before\W+(\*\*)?the subcommand", readme), "the globals-first gotcha stays documented"
 declared_extras = set(project_extras)
-mentioned_extras = set(re.findall(r'whatsapp-agent\[([a-z]+)\]', readme))
+mentioned_extras = set(re.findall(r'wa-agent\[([a-z]+)\]', readme))
 assert mentioned_extras <= declared_extras, f"the README offers extras that pyproject does not declare: {mentioned_extras - declared_extras}"
 for extra in declared_extras - {"dev"}:
     assert f"[{extra}]" in readme, f"pyproject declares the {extra} extra; the README never mentions it"
@@ -973,17 +973,17 @@ print("a photo lands in media/ with its path in the message; a failed download i
 
 # --------------------------------------------------------------------------- module entry point
 section("module entry point")
-proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "--version"], capture_output=True, text=True, cwd=ROOT,
+proc = subprocess.run([sys.executable, "-m", "wa_agent", "--version"], capture_output=True, text=True, cwd=ROOT,
                       env={**os.environ, "PYTHONPATH": str(ROOT)})
 assert proc.returncode == 0, proc.stderr
 assert installed in proc.stdout, proc.stdout
 # a command that needs no state and no network: this proves the entry point, not a feature
-proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "errors"], capture_output=True, text=True, cwd=ROOT,
+proc = subprocess.run([sys.executable, "-m", "wa_agent", "errors"], capture_output=True, text=True, cwd=ROOT,
                       env={**os.environ, "PYTHONPATH": str(ROOT)})
 assert proc.returncode == 0, proc.stderr
 assert "platform_rejected" in proc.stdout, proc.stdout[:200]
 assert "Traceback" not in proc.stderr, proc.stderr
-print("python -m whatsapp_agent matches the installed command, including its exit status")
+print("python -m wa_agent matches the installed command, including its exit status")
 
 # --------------------------------------------------------------------------- no stray state
 section("no stray state")

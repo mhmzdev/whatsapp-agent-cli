@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "whatsapp-agent"
+name = "wa-agent"
 version = "0.1.0"
 description = "A client for the WhatsApp Agent Platform: send, receive, media and transcription, as a library and a command."
 readme = "README.md"
@@ -32,7 +32,7 @@ dependencies = ["requests>=2.32"]
 dev = ["build", "twine"]
 
 [project.scripts]
-whatsapp-agent = "whatsapp_agent.cli:main"
+wa-agent = "wa_agent.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/mhmzdev/whatsapp-agent-cli"
@@ -40,7 +40,7 @@ Repository = "https://github.com/mhmzdev/whatsapp-agent-cli"
 Issues = "https://github.com/mhmzdev/whatsapp-agent-cli/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["whatsapp_agent"]
+packages = ["wa_agent"]
 
 [tool.hatch.build.targets.sdist]
-include = ["whatsapp_agent", "tests", "README.md", "LICENSE", "pyproject.toml"]
+include = ["wa_agent", "tests", "README.md", "LICENSE", "pyproject.toml"]
