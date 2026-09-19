@@ -1,4 +1,4 @@
-"""`python -m whatsapp_agent` — the same entry point as the installed command."""
+"""`python -m wa_agent` — the same entry point as the installed command."""
 
 import sys
 

@@ -311,9 +311,9 @@ def _recv(args, env=None, session=None, sleep=time.sleep):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="whatsapp-agent",
+        prog="wa-agent",
         description="Talk to the WhatsApp Agent Platform: send, receive, media, transcription.",
-        epilog=f"Token: ${TOKEN_ENV}, or --token-file. State: $XDG_STATE_HOME/whatsapp-agent/<profile>.",
+        epilog=f"Token: ${TOKEN_ENV}, or --token-file. State: $XDG_STATE_HOME/wa-agent/<profile>.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--token-file", metavar="PATH", help=f"file holding the token; ${TOKEN_ENV} wins over it")

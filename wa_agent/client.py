@@ -61,7 +61,7 @@ class WhatsApp:
         self.chunk_chars = int(chunk_chars)
         self.limits = RateLimiter({**DEFAULT_LIMITS, **(limits or {})}, now=now, sleep=sleep)
         if session is None:
-            import requests  # imported lazily so `import whatsapp_agent` stays cheap
+            import requests  # imported lazily so `import wa_agent` stays cheap
 
             session = requests.Session()
             self._transport_errors = (requests.RequestException,)
