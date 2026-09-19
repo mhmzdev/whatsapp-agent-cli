@@ -1032,7 +1032,12 @@ with tempfile.TemporaryDirectory() as tmp:
 # recv --transcribe --provider openrouter keeps the message's shape exactly as the Gemini path does
 with tempfile.TemporaryDirectory() as home:
     env = {"HOME": home, state.TOKEN_ENV: "secret-token", "GEMINI_API_KEY": "gem-key", "OPENROUTER_API_KEY": "or-key"}
-    voice = msg("wamid.V", kind="audio", voice=True)
+    def voice():
+        """A fresh message each run: recv folds the words into the dict it is given, so a
+        shared one would hand the second run the first run's result, and the comparison
+        below would be between a message and itself."""
+        return msg("wamid.V", kind="audio", voice=True)
+
     meta = FakeResponse(200, {"url": "https://lookaside.example/v", "mime_type": "audio/ogg"})
     gem_text = FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": "kal shaam ko aana"}]}}]})
 
@@ -1041,11 +1046,11 @@ with tempfile.TemporaryDirectory() as home:
         result = run_cli(["--state-dir", sdir, "recv", "--json", "--transcribe", *provider_args], env=run_env, session=FakeSession(responses))
         return sdir, result
 
-    g_dir, (status, out, err) = run_recv("g", [], [envelope(voice), meta, FakeBytes(200, b"OggS-audio"), gem_text])
+    g_dir, (status, out, err) = run_recv("g", [], [envelope(voice()), meta, FakeBytes(200, b"OggS-audio"), gem_text])
     assert status == 0, (status, err)
     via_gemini = json.loads(out.strip())
     o_dir, (status, out, err) = run_recv("o", ["--provider", "openrouter"],
-                                         [envelope(voice), meta, FakeBytes(200, b"OggS-audio"), openrouter_ok("kal shaam ko aana")])
+                                         [envelope(voice()), meta, FakeBytes(200, b"OggS-audio"), openrouter_ok("kal shaam ko aana")])
     assert status == 0, (status, err)
     via_openrouter = json.loads(out.strip())
     assert via_openrouter == via_gemini, "the message is identical whichever provider heard it"
