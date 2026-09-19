@@ -5,7 +5,7 @@
 [![PyPI](https://img.shields.io/pypi/v/wa-agent)](https://pypi.org/project/wa-agent/)
 [![Python](https://img.shields.io/pypi/pyversions/wa-agent)](https://pypi.org/project/wa-agent/)
 [![Tests](https://github.com/mhmzdev/whatsapp-agent-cli/actions/workflows/tests.yml/badge.svg?branch=develop)](https://github.com/mhmzdev/whatsapp-agent-cli/actions/workflows/tests.yml)
-[![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey)](https://github.com/mhmzdev/whatsapp-agent-cli/blob/main/LICENSE)
 
 Send and receive WhatsApp messages from a script, a cron job, a git hook, or a coding agent with shell access. It handles the parts that are tedious to get right — the long-poll and its cursor, per-method rate limits, the 4,096-character send cap, the two-hop media fetch, and an error table where one code means "back off" and another means "this token is dead, stop".
 
@@ -14,6 +14,8 @@ wa-agent send "deploy finished, 3 tests failing"
 ```
 
 It knows nothing about coding agents, folders, permissions or models. It moves messages.
+
+> **First product built on it: [Hisab](https://mhmzdev.github.io/hisab/)** — a ledger that texts back. Double-entry bookkeeping for small businesses, run entirely from WhatsApp. [More below.](#built-on-it-hisab)
 
 ## Contents
 
@@ -129,11 +131,23 @@ error [platform_rejected]: the platform refused this request; retrying will not 
 detail: POST /messages: HTTP 400 error.code 131009 …
 ```
 
-`wa-agent errors` lists them all. [`docs/errors.md`](docs/errors.md) says what to do about each and which are worth retrying — the short version is that exit `7` is, and `4` and `6` never are.
+`wa-agent errors` lists them all. [`docs/errors.md`](https://github.com/mhmzdev/whatsapp-agent-cli/blob/main/docs/errors.md) says what to do about each and which are worth retrying — the short version is that exit `7` is, and `4` and `6` never are.
 
 ## Built on it: Hisab
 
-This package was extracted from [**Hisab**](https://github.com/mhmzdev/hisab-whatsapp), a plain-language ledger you keep by texting WhatsApp — in English, Urdu or Roman Urdu, by voice or by text, with every entry checked by `hledger` before it is written. Hisab is the first product on this transport: it was where the cursor, dedup, rate-limit and dead-token rules were learned the hard way, and it moves onto the published `wa-agent` package next.
+[![Hisab — a ledger that texts back](https://raw.githubusercontent.com/mhmzdev/hisab-whatsapp/main/showcase/hisab-cover.png)](https://mhmzdev.github.io/hisab/)
+
+[**Hisab**](https://mhmzdev.github.io/hisab/) is a plain-language ledger you keep by texting WhatsApp — *"2500 coffee"* posts an entry, *"how much do I owe Metro?"* gets an answer — in English, Urdu or Roman Urdu, by voice, photo or text, with every entry checked by `hledger` before it is written.
+
+It is where this package came from. The cursor that only advances after a batch, the dedup, the per-method rate limits and the dead-token exit were all learned running Hisab against real messages, then extracted here so nothing else has to learn them again. Hisab is the first product on this transport, and moves onto the published `wa-agent` package next.
+
+The two repositories split the work cleanly:
+
+| | [whatsapp-agent-cli](https://github.com/mhmzdev/whatsapp-agent-cli) (this) | [hisab-whatsapp](https://github.com/mhmzdev/hisab-whatsapp) |
+|---|---|---|
+| Is | the transport: messages, media, transcription | a product: a ledger with a model and six tools |
+| Knows about | tokens, cursors, rate limits | accounts, entries, `hledger` |
+| You use it | from a script, a cron job, or your own agent | by texting it |
 
 ## Coming next: the relay
 
@@ -162,7 +176,7 @@ make up                 # a live inbox: text your agent and watch it land, until
 make live               # a scripted round trip: send, wait for your reply, read it back
 ```
 
-`make up` and `make live` keep their state in `.live-state/`, never your real one, and `make clean` removes it. `develop` is the trunk and PRs target it; `main` is what is published. Conventions live in [`AGENTS.md`](AGENTS.md).
+`make up` and `make live` keep their state in `.live-state/`, never your real one, and `make clean` removes it. `develop` is the trunk and PRs target it; `main` is what is published. Conventions live in [`AGENTS.md`](https://github.com/mhmzdev/whatsapp-agent-cli/blob/main/AGENTS.md).
 
 ## License
 

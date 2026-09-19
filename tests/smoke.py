@@ -815,6 +815,11 @@ anchors = {re.sub(r"[^\w\- ]", "", h.lower()).replace(" ", "-") for h in heading
 toc_links = re.findall(r"^- \[[^\]]+\]\(#([^)]+)\)", readme.split("## Contents", 1)[1].split("\n## ", 1)[0], re.MULTILINE)
 assert set(toc_links) == anchors, f"README contents and headings disagree: {set(toc_links) ^ anchors}"
 
+# PyPI renders this README as the project page, where a relative link is a 404:
+# every link must be absolute or an in-page anchor
+relative = re.findall(r"\]\(((?!https?://|#|mailto:)[^)]+)\)", readme)
+assert not relative, f"relative links break on the PyPI page: {relative}"
+
 # nothing from a personal setup
 for leak in ("_hisab", "_loop", "/Users/", "vault", "VPS", "hamza.6"):
     assert leak.lower() not in readme.lower(), f"README leaks {leak!r}"
