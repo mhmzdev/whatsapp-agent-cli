@@ -777,7 +777,13 @@ for method in ("send_iter", "poll", "download", "upload", "send_media", "typing"
 shown = set(re.findall(r"^wa-agent (?:--\S+ \S+ )*([a-z]+)", readme, re.MULTILINE))
 shown |= set(re.findall(r"^\| `([a-z]+)[ <`]", readme, re.MULTILINE))
 help_text = run_cli(["--help"])[1]
+# A command that does not exist yet may be shown only on a line that says so, so the
+# README can announce the relay without ever implying it can be run today.
+announced = {m.group(1) for m in re.finditer(r"^wa-agent ([a-z]+)[^\n]*coming soon", readme, re.MULTILINE)}
 for command in sorted(shown):
+    if command in announced:
+        assert command not in help_text, f"`wa-agent {command}` exists now; drop 'coming soon' from the README"
+        continue
     assert command in help_text, f"README shows `wa-agent {command}`, which --help does not list"
 assert {"send", "recv", "media", "errors"} <= shown, f"the README stopped documenting a command: {shown}"
 
@@ -806,7 +812,7 @@ assert not re.search(r"^[A-Z_]+=\S", example, re.MULTILINE), ".env.example must 
 # nothing from a personal setup
 for leak in ("_hisab", "_loop", "/Users/", "vault", "VPS", "hamza.6"):
     assert leak.lower() not in readme.lower(), f"README leaks {leak!r}"
-print(f".env.example documents every variable the code reads; README's {len(shown)} commands all exist, its Python example only uses exported names, and it names the extra, the env var and the error table")
+print(f".env.example documents every variable the code reads; README's {len(shown - announced)} commands all exist ({len(announced)} marked coming soon), its Python example only uses exported names, and it names the extra, the env var and the error table")
 
 # --------------------------------------------------------------------------- transcription
 section("transcription")
