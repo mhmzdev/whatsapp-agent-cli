@@ -89,6 +89,10 @@ def _send(args, env=None, session=None):
         print(sent.id, flush=True)
 
 
+KEY_ENV_HELP = ("environment variable holding the key (default: the provider's own, "
+                + " or ".join(transcription.KEY_ENVS.values()) + ")")
+LANGUAGE_HELP = "hint the spoken language, e.g. urdu; with openrouter it is sent as given, so use the code the provider expects, e.g. ur"
+
 BACKOFF_START = 1
 BACKOFF_CAP = 60
 
@@ -205,7 +209,8 @@ def _transcribe_into(message, client, args, env, session, tmp_root):
         try:
             path = Path(kept) if kept else client.download(media_id, tmp)[0]
             text = transcription.transcribe(path, model=args.transcribe_model, key_env=args.key_env,
-                                            language=args.language, session=session, env=env)
+                                            language=args.language, provider=args.provider,
+                                            session=session, env=env)
         except WhatsAppError as exc:
             # A failed transcription must never cost the message: it is delivered
             # marked, the reason travels with it, and the stream keeps moving.
@@ -264,10 +269,15 @@ def _recv(args, env=None, session=None, sleep=time.sleep):
     if args.download:
         _sweep(directory, args.keep_hours)
 
-    if args.transcribe and not transcription.api_key(args.key_env, env=env):
-        # Once, up front — not once per voice note, and not a reason to refuse to run.
-        print(f"warning: {args.key_env} is not set; voice notes will arrive untranscribed",
-              file=sys.stderr, flush=True)
+    if args.transcribe:
+        # An unknown provider is refused before the first poll: left to the voice
+        # notes, it would mark every one of them failed for as long as --follow runs.
+        transcription.check_provider(args.provider)
+        key_name = transcription.key_env_for(args.provider, args.key_env)
+        if not transcription.api_key(key_name, env=env):
+            # Once, up front — not once per voice note, and not a reason to refuse to run.
+            print(f"warning: {key_name} is not set; voice notes will arrive untranscribed",
+                  file=sys.stderr, flush=True)
 
     backoff = BACKOFF_START
     replay = args.replay
@@ -335,10 +345,12 @@ def build_parser():
     p_recv.add_argument("--follow", action="store_true", help="hold the long-poll open and stream")
     p_recv.add_argument("--json", action="store_true", help="one JSON object per line")
     p_recv.add_argument("--transcribe", action="store_true", help="add a transcript to each voice note (needs a transcription key)")
-    p_recv.add_argument("--transcribe-model", metavar="NAME", default=None, help=f"transcription model (default: {transcription.DEFAULT_MODEL})")
-    p_recv.add_argument("--key-env", metavar="NAME", default=transcription.DEFAULT_KEY_ENV,
-                        help="environment variable holding the transcription key (default: %(default)s)")
-    p_recv.add_argument("--language", metavar="NAME", default=None, help="hint the spoken language, e.g. urdu")
+    p_recv.add_argument("--provider", default="gemini", metavar="NAME",
+                        help="transcription provider: " + ", ".join(transcription.PROVIDERS) + " (default: %(default)s)")
+    p_recv.add_argument("--transcribe-model", metavar="NAME", default=None,
+                        help="transcription model (default: per provider; with openrouter, an OpenRouter model id)")
+    p_recv.add_argument("--key-env", metavar="NAME", default=None, help=KEY_ENV_HELP)
+    p_recv.add_argument("--language", metavar="NAME", default=None, help=LANGUAGE_HELP)
     p_recv.add_argument("--typing", action="store_true", help="mark each delivered message read and show the typing indicator")
     p_recv.add_argument("--download", action="store_true",
                         help="fetch photos, documents and voice notes into the state dir as they arrive; adds a path to the message")
@@ -367,11 +379,13 @@ def build_parser():
 
     p_tr = sub.add_parser("transcribe", help="turn an audio file into text")
     p_tr.add_argument("path")
-    p_tr.add_argument("--provider", default="gemini", help="transcription provider (default: %(default)s; offline is issue #20)")
-    p_tr.add_argument("--model", metavar="NAME", default=None, help=f"model to use (default: {transcription.DEFAULT_MODEL})")
-    p_tr.add_argument("--key-env", metavar="NAME", default=transcription.DEFAULT_KEY_ENV,
-                      help="environment variable holding the key (default: %(default)s)")
-    p_tr.add_argument("--language", metavar="NAME", default=None, help="hint the spoken language, e.g. urdu")
+    p_tr.add_argument("--provider", default="gemini", metavar="NAME",
+                      help="transcription provider: " + ", ".join(transcription.PROVIDERS)
+                           + " (default: %(default)s; offline is issue #20)")
+    p_tr.add_argument("--model", metavar="NAME", default=None,
+                      help="model to use (default: per provider; with openrouter, an OpenRouter model id)")
+    p_tr.add_argument("--key-env", metavar="NAME", default=None, help=KEY_ENV_HELP)
+    p_tr.add_argument("--language", metavar="NAME", default=None, help=LANGUAGE_HELP)
     p_tr.set_defaults(func=_transcribe_command)
 
     return parser
