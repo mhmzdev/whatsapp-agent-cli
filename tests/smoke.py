@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import wa_agent  # noqa: E402
-from wa_agent import cli, client, errors, media, ratelimit, state, store, text, transcribe  # noqa: E402
+from wa_agent import cli, client, doctor, errors, media, ratelimit, state, store, text, transcribe  # noqa: E402
 
 # What must never reach a user's terminal: our internals, or a provider's raw words.
 # Provider *names* are deliberately allowed here, unlike in hisab: a developer who has
@@ -163,7 +163,7 @@ print("default lands under HOME, not the working directory; 0700; XDG, profile a
 section("cli surface")
 status, out, err = run_cli(["--help"])
 assert status == 0, status
-for name in ("send", "recv", "media", "transcribe"):
+for name in ("send", "recv", "media", "transcribe", "doctor"):
     assert name in out, f"--help does not list {name}"
 # every subcommand is implemented now; not_implemented stays registered for the next one
 assert "not_implemented" in errors.CODES
@@ -1139,6 +1139,406 @@ with tempfile.TemporaryDirectory() as home:
     status, out, err = run_cli(["--state-dir", sdir, "recv", "--json"], env=env, session=session)
     assert status == 0 and not any("/media/" in c["url"] for c in session.calls), session.calls
 print("a photo lands in media/ with its path in the message; a failed download is delivered marked; --download with --transcribe fetches once and keeps it; no --download, no media request")
+
+# --------------------------------------------------------------------------- doctor
+section("doctor")
+
+# Three distinct, made-up secrets, so "never printed" is a search for these exact strings.
+DOC_TOKEN = "doctor-token-SECRET-aaaa1111"
+DOC_GEMINI = "doctor-gemini-SECRET-bbbb2222"
+DOC_OPENROUTER = "doctor-openrouter-SECRET-cccc3333"
+DOC_SECRETS = (DOC_TOKEN, DOC_GEMINI, DOC_OPENROUTER)
+WA_HOST, GEMINI_HOST, OPENROUTER_HOST = "api.whatsapp.com", "generativelanguage.googleapis.com", "openrouter.ai"
+
+
+class DoctorSession(FakeSession):
+    """Answers by host. `None` means no request to that host is expected: a call there fails
+    the check, which is how "an absent key makes no call" is proved."""
+
+    def __init__(self, wa=None, gemini=None, openrouter=None):
+        super().__init__([])
+        self.answers = {WA_HOST: wa, GEMINI_HOST: gemini, OPENROUTER_HOST: openrouter}
+
+    def request(self, verb, url, headers=None, **kwargs):
+        self.calls.append({"verb": verb, "url": url, "headers": headers, **kwargs})
+        for host, answer in self.answers.items():
+            if host in url:
+                assert answer is not None, f"doctor made a request to {host} that this scenario says it must not: {verb} {url}"
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
+        raise AssertionError(f"doctor asked an unknown host: {url}")
+
+    def to(self, host):
+        return [c for c in self.calls if host in c["url"]]
+
+
+def snapshot(root):
+    """Every path under root with its bytes and mode: equal before and after means untouched."""
+    return sorted((str(p.relative_to(root)), oct(p.stat().st_mode), p.read_bytes() if p.is_file() else None)
+                  for p in [root, *root.rglob("*")])
+
+
+def doctor_lines(out):
+    """(status label, check name, message) per check; fix lines come back separately."""
+    checks, fixes = [], []
+    for line in out.splitlines():
+        if line.startswith(" ") and line.strip().startswith("fix:"):
+            assert checks, "a fix line with no check above it"
+            fixes.append((len(checks) - 1, line.strip()[4:].strip()))
+        else:
+            label, _, rest = line.partition(" ")
+            rest = rest.lstrip()
+            for name in ("python", "token", "gemini key", "openrouter key", "state dir", "creator"):
+                if rest.startswith(name):
+                    checks.append((label, name, rest[len(name):].strip()))
+                    break
+            else:
+                raise AssertionError(f"a line that is neither a check nor a fix: {line!r}")
+    return checks, dict(fixes)
+
+
+DOC_ORDER = ["python", "token", "gemini key", "openrouter key", "state dir", "creator"]
+GOOD_WA, GOOD_KEY = FakeResponse(404, {"error": {"code": 33}}), FakeResponse(200, {"data": {}})
+
+with tempfile.TemporaryDirectory() as tmp:
+    tmp = Path(tmp).resolve()
+    home = tmp / "home"
+    home.mkdir()
+    sd = tmp / "state"
+    sd.mkdir()
+    (sd / "creator").write_text("user:demo-1")
+
+    def run_doctor(session, *, state=sd, extra=(), token=DOC_TOKEN, gemini=DOC_GEMINI, openrouter=DOC_OPENROUTER,
+                   debug=False, argv_state=True):
+        env = {"HOME": str(home)}
+        for name, value in (("WHATSAPP_AGENT_TOKEN", token), ("GEMINI_API_KEY", gemini), ("OPENROUTER_API_KEY", openrouter)):
+            if value is not None:
+                env[name] = value
+        if debug:
+            env["WHATSAPP_AGENT_DEBUG"] = "1"
+        argv = (["--state-dir", str(state)] if argv_state else []) + list(extra) + ["doctor"]
+        status, out, err = run_cli(argv, env=env, session=session)
+        # the invariants that hold in every scenario, so no scenario can forget them
+        assert not any("/updates" in c["url"] for c in session.calls), f"doctor polled: {[c['url'] for c in session.calls]}"
+        assert all(c["verb"] == "GET" for c in session.calls), [c["verb"] for c in session.calls]
+        assert not any({"json", "data", "files", "params"} & set(c) for c in session.calls), "a probe carried a body"
+        for secret in DOC_SECRETS:
+            assert secret not in out and secret not in err, f"a secret reached the output (debug={debug}): {out}{err}"
+        assert "Traceback" not in out
+        return status, out, err
+
+    # 1. all good: six lines in order, nothing failing, exit 0, exactly one call each
+    session = DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY)
+    before = snapshot(tmp)
+    status, out, err = run_doctor(session)
+    assert status == 0, (out, err)
+    checks, fixes = doctor_lines(out)
+    assert [c[1] for c in checks] == DOC_ORDER, checks
+    assert [c[0] for c in checks] == ["ok"] * 6, checks
+    assert not fixes and "FAIL" not in out
+    assert snapshot(tmp) == before, "doctor wrote something"
+
+    # the token check is one GET on /media/<the named probe id>, through the token's header, and no more
+    wa_calls = session.to(WA_HOST)
+    assert len(wa_calls) == 1, [c["url"] for c in wa_calls]
+    assert wa_calls[0]["url"] == f"{client.BASE}/media/{client.PROBE_MEDIA_ID}", wa_calls[0]["url"]
+    assert wa_calls[0]["headers"] == {"Authorization": f"Bearer {DOC_TOKEN}"}
+    # each key probe: one bodyless GET on a metadata endpoint, the credential in a header and never in the url
+    (g,), (o,) = session.to(GEMINI_HOST), session.to(OPENROUTER_HOST)
+    assert g["url"] == "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", g["url"]
+    assert g["headers"] == {"x-goog-api-key": DOC_GEMINI}
+    assert o["url"] == "https://openrouter.ai/api/v1/key", o["url"]
+    assert o["headers"] == {"Authorization": f"Bearer {DOC_OPENROUTER}"}
+    for call in (g, o):
+        for spend in ("generateContent", "audio/transcriptions", "/chat", "/completions"):
+            assert spend not in call["url"], f"a key probe touched a paid endpoint: {call['url']}"
+        assert not any(secret in call["url"] for secret in DOC_SECRETS)
+    print("all good: six ok lines in order; one GET a probe on metadata endpoints, credentials in headers, no /updates, nothing written")
+
+    # --key-env is gone: two keys made it ambiguous, and a diagnostic does not need it
+    status, out, err = run_cli(["doctor", "--key-env", "X"], env={"HOME": str(home)}, session=DoctorSession())
+    assert status == 2, (status, err)
+    status, out, err = run_cli(["doctor", "--help"], env={"HOME": str(home)})
+    assert "--key-env" not in out and "--provider" not in out
+
+    # 2. a dead token, both spellings: FAIL with the fresh-token fix, exit 15, never "accepted"
+    for dead in (FakeResponse(401, {"error": {"code": 190}}), FakeResponse(400, {"error": {"code": 100}})):
+        session = DoctorSession(wa=dead, gemini=GOOD_KEY, openrouter=GOOD_KEY)
+        status, out, err = run_doctor(session)
+        checks, fixes = doctor_lines(out)
+        token_line = checks[1]
+        assert status == errors.CODES["doctor_failed"].exit_status == 15, (status, err)
+        assert token_line[0] == "FAIL" and "rejected" in token_line[2] and "accepted" not in token_line[2], token_line
+        assert "fresh token" in fixes[1], fixes
+        assert err.startswith("error [doctor_failed]:"), err
+        assert "1 of 6 checks failed" in err
+    print("a dead token (401, and 400 with error.code 100) fails the token line with a fresh-token fix, exit 15")
+
+    # 3. could not verify: FAIL saying so, and never claiming the token is good
+    for unreachable in (FakeTransportError(f"connection reset {DOC_TOKEN} {DOC_GEMINI}"), FakeResponse(429), FakeResponse(503)):
+        session = DoctorSession(wa=unreachable, gemini=GOOD_KEY, openrouter=GOOD_KEY)
+        status, out, err = run_doctor(session)
+        token_line = doctor_lines(out)[0][1]
+        assert status == 15 and token_line[0] == "FAIL", (status, out)
+        assert "could not reach" in token_line[2] and "accepted" not in token_line[2], token_line
+        assert len(session.to(WA_HOST)) == 1, "the probe must not retry"
+    # a status the mapping does not know is "unexpected", not "accepted" and not "dead"
+    for odd in (FakeResponse(403, {"error": {"code": 10}}), FakeResponse(400, {"error": {"code": 33}})):
+        session = DoctorSession(wa=odd, gemini=GOOD_KEY, openrouter=GOOD_KEY)
+        status, out, err = run_doctor(session)
+        checks, fixes = doctor_lines(out)
+        token_line, fix = checks[1], fixes[1]
+        assert status == 15 and token_line[0] == "FAIL" and "unexpected" in token_line[2], token_line
+        assert "accepted" not in token_line[2] and "fresh token" not in fix, (token_line, fix)
+    # 2xx and 404 both read as a good token
+    for good in (FakeResponse(200, {}), FakeResponse(404, {})):
+        status, out, err = run_doctor(DoctorSession(wa=good, gemini=GOOD_KEY, openrouter=GOOD_KEY))
+        assert status == 0 and doctor_lines(out)[0][1][0] == "ok"
+    print("unreachable (transport, 429, 503) and unexpected (403, 400/33) fail the token line without calling it good")
+
+    # 4. no usable token: FAIL, and the platform is never asked
+    session = DoctorSession(gemini=GOOD_KEY, openrouter=GOOD_KEY)
+    status, out, err = run_doctor(session, token=None)
+    checks, fixes = doctor_lines(out)
+    assert status == 15 and checks[1][0] == "FAIL" and "WHATSAPP_AGENT_TOKEN" in fixes[1], (out, fixes)
+    assert not session.to(WA_HOST)
+    session = DoctorSession(gemini=GOOD_KEY, openrouter=GOOD_KEY)
+    status, out, err = run_doctor(session, token="line-one\nline-two")
+    checks, fixes = doctor_lines(out)
+    assert status == 15 and checks[1][0] == "FAIL" and "whitespace" in checks[1][2] and "line-one" not in out, out
+    assert not session.to(WA_HOST), "a token pasted across two lines must not be sent"
+    # a token file: a trailing newline is normal; the file is named, the token is not
+    token_file = tmp / "token"
+    token_file.write_text(DOC_TOKEN + "\n")
+    session = DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY)
+    status, out, err = run_doctor(session, token=None, extra=["--token-file", str(token_file)])
+    checks = doctor_lines(out)[0]
+    assert status == 0 and checks[1][0] == "ok" and "--token-file" in checks[1][2], out
+    assert session.to(WA_HOST)[0]["headers"] == {"Authorization": f"Bearer {DOC_TOKEN}"}
+    for bad_file in (tmp / "missing", tmp / "empty"):
+        (tmp / "empty").write_text("\n")
+        session = DoctorSession(gemini=GOOD_KEY, openrouter=GOOD_KEY)
+        status, out, err = run_doctor(session, token=None, extra=["--token-file", str(bad_file)])
+        assert status == 15 and doctor_lines(out)[0][1][0] == "FAIL" and not session.to(WA_HOST), out
+    print("no token, a token with a line break in it, and an unreadable or empty token file fail with no request to the platform; a good file passes")
+
+    # 5. each provider key is its own line and its own outcome
+    cases = {
+        "gemini": {"var": "GEMINI_API_KEY", "index": 2, "host": GEMINI_HOST, "rejected": (400, 401, 403), "kw": "gemini"},
+        "openrouter": {"var": "OPENROUTER_API_KEY", "index": 3, "host": OPENROUTER_HOST, "rejected": (401, 403), "kw": "openrouter"},
+    }
+    for provider, case in cases.items():
+        other = "openrouter" if provider == "gemini" else "gemini"
+
+        def session_for(this):
+            return DoctorSession(wa=GOOD_WA, **{provider: this, other: GOOD_KEY})
+
+        def run_with(this, **kw):
+            # the other provider's key is set and answers 200, so only this line varies
+            return run_doctor(session_for(this), **kw)
+
+        # absent (and a whitespace-only key is absent): optional, and that provider is never called
+        for absent in (None, "   "):
+            session = DoctorSession(wa=GOOD_WA, **{provider: None, other: GOOD_KEY})
+            status, out, err = run_doctor(session, **{provider: absent})
+            line = doctor_lines(out)[0][case["index"]]
+            assert status == 0, (provider, out)
+            assert line[0] == "optional" and case["var"] in line[2], line
+            assert not session.to(case["host"]), f"{provider}: an absent key must make no request"
+        # accepted
+        status, out, err = run_with(FakeResponse(200, {}))
+        assert status == 0 and doctor_lines(out)[0][case["index"]][0] == "ok"
+        # rejected: FAIL, exit 15, the fix names the variable, and the other provider is unaffected
+        for code in case["rejected"]:
+            status, out, err = run_with(FakeResponse(code, {"error": {"message": DOC_GEMINI}}))
+            checks, fixes = doctor_lines(out)
+            line = checks[case["index"]]
+            assert status == 15 and line[0] == "FAIL", (provider, code, out)
+            assert case["var"] in fixes[case["index"]], fixes
+            assert [c[0] for i, c in enumerate(checks) if i != case["index"]] == ["ok"] * 5, checks
+        # cannot verify: never FAIL, never "ok", exit stays 0 — an optional feature's hiccup must not fail a script
+        for unclear in (FakeResponse(503), FakeResponse(429), FakeResponse(500), FakeResponse(404),
+                        FakeTransportError(f"timed out talking to a host {DOC_GEMINI} {DOC_OPENROUTER}")):
+            status, out, err = run_with(unclear)
+            line = doctor_lines(out)[0][case["index"]]
+            assert status == 0, (provider, unclear, out)
+            assert line[0] == "optional" and "not verified" in line[2], line
+    print("each provider key: absent or blank optional with no request; rejected FAIL (gemini 400/401/403, openrouter 401/403); "
+          "unreachable, 429, 5xx or an unknown status optional; a rejected key on one provider fails the run whatever the other says")
+
+    # both keys absent is still a passing run
+    session = DoctorSession(wa=GOOD_WA)
+    status, out, err = run_doctor(session, gemini=None, openrouter=None)
+    checks = doctor_lines(out)[0]
+    assert status == 0 and [c[0] for c in checks] == ["ok", "ok", "optional", "optional", "ok", "ok"], out
+    assert len(session.calls) == 1, "with no keys, the only request is the token probe"
+    print("no keys at all: two optional lines and exit 0")
+
+    # a key pasted across two lines FAILs, naming the variable and never the value, and no request is sent
+    # (`requests` would refuse the header before sending, which must not read as an unreachable provider)
+    broken = "wskey-part-one-SECRET\nwskey-part-two-SECRET"
+    for provider, case in cases.items():
+        other = "openrouter" if provider == "gemini" else "gemini"
+        # nothing else set: the run makes no request at all
+        session = DoctorSession()
+        status, out, err = run_doctor(session, **{"token": None, "gemini": None, "openrouter": None, provider: broken})
+        assert session.calls == [], f"{provider}: a key with a line break was sent somewhere: {session.calls}"
+        checks, fixes = doctor_lines(out)
+        line = checks[case["index"]]
+        assert status == 15 and line[0] == "FAIL" and "whitespace" in line[2] and case["var"] in line[2], line
+        assert "one unbroken line" in fixes[case["index"]] and case["var"] in fixes[case["index"]], fixes
+        # with a good token and a good other key, only those are asked
+        session = DoctorSession(wa=GOOD_WA, **{provider: None, other: GOOD_KEY})
+        status, out, err = run_doctor(session, **{provider: broken})
+        assert not session.to(case["host"]), f"{provider}: the broken key reached the provider"
+        assert len(session.to(WA_HOST)) == 1 and len(session.to(GEMINI_HOST if other == "gemini" else OPENROUTER_HOST)) == 1
+        assert status == 15 and doctor_lines(out)[0][case["index"]][0] == "FAIL"
+        for part in ("wskey-part-one", "wskey-part-two"):
+            assert part not in out and part not in err, f"{provider}: the value of a key reached the output"
+    print("a key with whitespace inside it fails for both providers, naming the variable and never the value, with no request sent")
+
+    # 6. the state directory and the creator; nothing is ever created or written
+    fresh = tmp / "not" / "here" / "yet"
+    session = DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY)
+    before = snapshot(tmp)
+    status, out, err = run_doctor(session, state=fresh)
+    checks, fixes = doctor_lines(out)
+    assert checks[4][0] == "ok" and "does not exist yet" in checks[4][2], checks[4]
+    assert checks[5][0] == "FAIL" and "recv" in fixes[5], (checks[5], fixes)     # no creator in a state dir that is not there
+    assert status == 15
+    assert not fresh.exists() and not fresh.parent.exists(), "doctor created the state directory"
+    assert snapshot(tmp) == before, "doctor changed the tree"
+
+    # a state dir that exists and has no creator recorded, then one that does
+    empty = tmp / "empty-state"
+    empty.mkdir()
+    before = snapshot(tmp)
+    status, out, err = run_doctor(DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY), state=empty)
+    checks, fixes = doctor_lines(out)
+    assert checks[4][0] == "ok" and "writable" in checks[4][2] and checks[5][0] == "FAIL", checks
+    assert "recv" in fixes[5] and "--to" in fixes[5]
+    assert snapshot(tmp) == before, "doctor wrote into the state directory"
+
+    # a file where the directory should be
+    blocker = tmp / "a-file"
+    blocker.write_text("not a directory")
+    status, out, err = run_doctor(DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY), state=blocker)
+    checks, fixes = doctor_lines(out)
+    assert checks[4][0] == "FAIL" and "not a directory" in checks[4][2] and 4 in fixes, checks
+    assert blocker.read_text() == "not a directory"
+
+    # a profile that is not a name: a FAIL line, not a traceback, and the rest still reports
+    status, out, err = run_doctor(DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY),
+                                  extra=["--profile", "a/b"], argv_state=False)
+    checks, fixes = doctor_lines(out)
+    assert status == 15 and checks[4][0] == "FAIL" and checks[5][0] == "FAIL" and checks[1][0] == "ok", out
+    assert "Traceback" not in err
+
+    # unwritable places are only testable off root (root writes anywhere)
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        locked_parent = tmp / "locked"
+        locked_parent.mkdir()
+        (locked_parent / "existing").mkdir()
+        try:
+            locked_parent.chmod(0o500)
+            (locked_parent / "existing").chmod(0o500)
+            for target, want in ((locked_parent / "child", "cannot be created"), (locked_parent / "existing", "not writable")):
+                before = snapshot(tmp)
+                status, out, err = run_doctor(DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY), state=target)
+                checks, fixes = doctor_lines(out)
+                assert status == 15 and checks[4][0] == "FAIL" and want in checks[4][2], (target, checks[4])
+                assert 4 in fixes
+                assert snapshot(tmp) == before
+        finally:
+            (locked_parent / "existing").chmod(0o700)
+            locked_parent.chmod(0o700)
+        print("state dir: existing and writable, absent but creatable, a file, a bad profile, an unwritable parent and an unwritable directory; the tree never changes")
+    else:
+        print("state dir: existing, absent, a file and a bad profile (the unwritable cases are skipped as root); the tree never changes")
+
+    # the creator, recorded, is a passing line
+    status, out, err = run_doctor(DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY))
+    assert doctor_lines(out)[0][5][0] == "ok"
+
+    # 7. the secrets never appear, in any of the scenarios' shapes, with or without debug
+    def shape(n):
+        return [
+            DoctorSession(wa=GOOD_WA, gemini=GOOD_KEY, openrouter=GOOD_KEY),
+            DoctorSession(wa=FakeResponse(401, {"error": {"code": 190, "message": DOC_TOKEN}}), gemini=GOOD_KEY, openrouter=GOOD_KEY),
+            DoctorSession(wa=FakeTransportError(f"reset {DOC_TOKEN}"), gemini=FakeTransportError(f"reset {DOC_GEMINI}"),
+                          openrouter=FakeTransportError(f"reset {DOC_OPENROUTER}")),
+            DoctorSession(wa=FakeResponse(403, {"error": {"message": DOC_TOKEN}}), gemini=FakeResponse(403, {"error": DOC_GEMINI}),
+                          openrouter=FakeResponse(401, {"error": DOC_OPENROUTER})),
+        ][n]
+
+    for n in range(4):
+        for debug in (False, True):
+            status, out, err = run_doctor(shape(n), debug=debug)   # run_doctor asserts no secret in out or err
+            if debug and status != 0:
+                assert "Traceback" in err, "debug should add a traceback, which is still free of secrets"
+    print("the token and both provider keys never appear in stdout or stderr: pass, dead, unreachable and unexpected, with and without WHATSAPP_AGENT_DEBUG=1")
+
+    # 8. the python line, and the floor agrees with the packaging
+    requires = re.search(r'^requires-python\s*=\s*">=(\d+)\.(\d+)"', (ROOT / "pyproject.toml").read_text(encoding="utf-8"), re.MULTILINE)
+    assert requires, "requires-python is no longer a simple >=X.Y"
+    assert doctor.MIN_PYTHON == (int(requires.group(1)), int(requires.group(2))), "doctor's floor and requires-python disagree"
+    assert doctor.check_python((3, 9, 6)).status == "fail" and "install Python" in doctor.check_python((3, 9, 6)).fix
+    assert doctor.check_python((3, 10, 0)).status == "ok" and doctor.check_python((4, 0, 0)).status == "ok"
+    old_python = doctor.run_checks(state_dir_override=str(sd), env={"HOME": str(home), "WHATSAPP_AGENT_TOKEN": DOC_TOKEN},
+                                   session=DoctorSession(wa=GOOD_WA), python_version=(3, 9, 0))
+    assert old_python[0].status == "fail" and doctor.failed(old_python) == [old_python[0]]
+    print(f"python floor {doctor.MIN_PYTHON} agrees with requires-python; an older interpreter fails the first line")
+
+    # every transcription provider has a key probe, and the variable each is read from is transcribe's own
+    assert set(doctor.KEY_PROBES) == set(transcribe.PROVIDERS)
+    for provider in transcribe.PROVIDERS:
+        assert transcribe.KEY_ENVS[provider] in doctor.check_key(provider, env={}).message
+    print("every transcription provider has a key probe, read from the variable transcribe names")
+
+# --------------------------------------------------------------------------- client.probe_token
+section("client.probe_token")
+for status, payload, verdict in [
+    (404, {"error": {"code": 33}}, True), (200, {}, True),
+]:
+    wa, session = make_client([FakeResponse(status, payload)])
+    assert wa.probe_token() is verdict, status
+    (call,) = session.calls
+    assert call["verb"] == "GET" and call["url"] == f"{client.BASE}/media/{client.PROBE_MEDIA_ID}", call["url"]
+    assert call["headers"] == {"Authorization": "Bearer secret-token"}
+    assert "/updates" not in call["url"] and not ({"json", "data", "files"} & set(call))
+for status, payload, code in [
+    (401, {"error": {"code": 190}}, "auth"), (400, {"error": {"code": 100}}, "auth"),
+    (400, {"error": {"code": 33}}, "platform_rejected"), (403, {}, "platform_rejected"), (410, None, "platform_rejected"),
+    (429, {}, "platform_unavailable"), (503, {}, "platform_unavailable"), (500, {}, "platform_unavailable"),
+    (408, {}, "platform_unavailable"),
+]:
+    wa, session = make_client([FakeResponse(status, payload)])
+    try:
+        wa.probe_token()
+        raise AssertionError(f"probe_token accepted a {status}")
+    except errors.WhatsAppError as exc:
+        assert exc.code == code, (status, exc.code)
+        assert isinstance(exc, errors.AuthError) == (code == "auth")
+    assert len(session.calls) == 1, "the probe is one request: no retry past a 429, no second hop"
+wa, session = make_client([FakeTransportError("boom")])
+try:
+    wa.probe_token()
+    raise AssertionError("a transport error must raise")
+except errors.WhatsAppError as exc:
+    assert exc.code == "platform_unavailable"
+assert isinstance(client.PROBE_MEDIA_ID, str) and client.PROBE_MEDIA_ID and 404 in client.PROBE_ACCEPTED
+assert "UNCONFIRMED" in (ROOT / "wa_agent" / "client.py").read_text(encoding="utf-8"), "the probe mapping must say it is unconfirmed"
+
+# it is paced like any other media_get: the 13th probe in a minute waits for the window
+wa, session = make_client([GOOD_WA] * 13)
+start = wa.limits._now()
+for _ in range(13):
+    wa.probe_token()
+assert wa.limits._now() - start >= 40, "probe_token must go through the media_get limiter"
+assert not any("/updates" in c["url"] for c in session.calls)
+print("probe_token: 404 and 2xx accept; 401 and 400/100 are AuthError; 429/5xx/transport are platform_unavailable; anything else platform_rejected; "
+      "one GET, bearer header, never /updates, paced by media_get")
 
 # --------------------------------------------------------------------------- module entry point
 section("module entry point")

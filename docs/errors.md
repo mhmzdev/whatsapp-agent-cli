@@ -36,6 +36,7 @@ The first line is fixed text you can search for. The `detail:` line is for a hum
 | `no_transcription_key` | 12 | no | Transcription was asked for, and no key was found in the variable for the chosen provider: `GEMINI_API_KEY` for `gemini` (the default), `OPENROUTER_API_KEY` for `openrouter`, or the one `--key-env` names. The `detail:` line says which was read | Set that variable, point `--key-env` at the variable you keep the key in, or choose the provider your key is for with `--provider`. A key for the other provider is never used instead. `recv --transcribe` does not fail on this — it warns once and delivers voice notes marked `transcribed: false` |
 | `transcription_unavailable` | 13 | **yes** | The transcription provider was unreachable, timed out, or rate-limited | Retry. During `recv --transcribe` the message is delivered marked rather than lost, so retrying is your choice, not a requirement |
 | `transcription_failed` | 14 | no | The provider answered, but with nothing usable: an empty transcript, a refusal, or a body that was not a transcript | Check the audio is audible and of a supported type. An error from a provider is never passed on as if it were speech, which is why this is a failure rather than a transcript |
+| `doctor_failed` | 15 | no | `wa-agent doctor` ran and at least one check failed. The report above the error line is the diagnosis; this code only says the run as a whole did not pass. An `optional` line never causes it | Read the `fix:` line under each `FAIL` and run `doctor` again. In a script, branch on `0` (all clear) versus `15` |
 | `internal` | 70 | no | Something unforeseen. This is the fallback that keeps a traceback away from a caller | Re-run with `WHATSAPP_AGENT_DEBUG=1` for the traceback, and please open an issue with it |
 
 Exit `130` is the conventional one for Ctrl-C, not a failure: `recv --follow` uses it after finishing the batch it is on.
@@ -52,6 +53,12 @@ case $? in
   4)  alert "token is dead" ;;  # never retries
   *)  alert "look at it" ;;   # everything else is a real problem
 esac
+```
+
+To check a setup before relying on it, run `wa-agent doctor`. It prints one line a check and exits `0` when nothing failed, `15` when something did. It never polls, so it is safe beside a running `recv`:
+
+```bash
+wa-agent doctor || echo "fix what it printed, then run it again"
 ```
 
 ## Adding a code

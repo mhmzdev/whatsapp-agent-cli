@@ -94,6 +94,7 @@ A voice note keeps its shape and gains the words, so code that reads `text.body`
 | `transcribe <file>` | Audio in, text out. Gemini or OpenRouter, chosen with `--provider`; offline is [#20](https://github.com/mhmzdev/whatsapp-agent-cli/issues/20) |
 | `media get <id>` | Download to the state directory, or `--out DIR`. Prints the path and nothing else |
 | `media put <path>` | Upload, print the media id |
+| `doctor` | Check a setup, a line each: Python, token, each transcription key, state directory, creator. Says what to fix, exits `15` if anything fails. It never polls, so it is safe beside a running `recv`, but it does make real, free metadata requests to the platform and to every provider whose key is set in your environment |
 | `errors` | The exit-code table |
 
 Global options — `--token-file`, `--state-dir`, `--profile` — go **before** the subcommand, as in git:
@@ -133,6 +134,8 @@ Every failure names its code and exits with a number a script can branch on:
 error [platform_rejected]: the platform refused this request; retrying will not help
 detail: POST /messages: HTTP 400 error.code 131009 …
 ```
+
+Not sure where a setup stands? `wa-agent doctor` checks it in one go and says what to fix.
 
 `wa-agent errors` lists them all. [`docs/errors.md`](https://github.com/mhmzdev/whatsapp-agent-cli/blob/main/docs/errors.md) says what to do about each and which are worth retrying — the short version is that exit `7` is, and `4` and `6` never are.
 

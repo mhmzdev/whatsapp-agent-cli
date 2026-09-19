@@ -25,6 +25,15 @@ BASE = "https://api.whatsapp.com/agent/v1"
 RETRYABLE_STATUS = (408, 425, 429, 500, 502, 503, 504)
 MAX_POLL_TIMEOUT = 25   # the platform's own ceiling on the long-poll
 
+# What `probe_token` asks, and which answers it reads as "the token is good". UNCONFIRMED
+# against the live platform: the guess is that a good token gets a 404 for a media id
+# that cannot exist, and a dead one a 401 or a 400 with error.code 100. Both constants
+# are set from the post-merge probe (docs/exec-plans, GH-32). The id matters: a 400 with
+# error.code 100 is also what a *malformed* id can earn with a good token, and the rule
+# below would then call that good token dead.
+PROBE_MEDIA_ID = "1"
+PROBE_ACCEPTED = (404,)
+
 # One part of a sent message: the id the platform gave it, and the text it carries.
 # Returning both means a caller never has to re-run the split to know what was sent.
 Sent = namedtuple("Sent", "id text")
@@ -196,6 +205,40 @@ class WhatsApp:
             if tmp.exists():
                 tmp.unlink()
         return path, mime
+
+    def probe_token(self):
+        """Ask the platform whether it accepts this token, without disturbing anything.
+
+        Never `/updates`: a poll from here would take the long-poll away from a running
+        `recv` and hand it a 409, so checking the token would break the thing it checks.
+        It is one `GET /media/<id>` for an id that cannot exist — a read, with no side
+        effect. The answer is classified here rather than through `_checked`, because
+        `_checked` folds every 4xx into one code and this has to tell "404: the token is
+        fine, the id is not" from "403: something this does not understand".
+
+        Returns True when the token is accepted. Raises `AuthError` when it is dead,
+        `platform_unavailable` when nothing could be learned (worth retrying), and
+        `platform_rejected` when the platform said something the mapping does not know,
+        which must never be reported as a good token. The mapping is unconfirmed until
+        the post-merge probe; see PROBE_MEDIA_ID.
+        """
+        path = f"/media/{PROBE_MEDIA_ID}"
+        self.limits.acquire("media_get")
+        try:
+            response = self._session.request("GET", f"{self.base}{path}", headers=self._headers, timeout=15)
+        except self._transport_errors as exc:
+            raise WhatsAppError("platform_unavailable", f"GET {path}: {exc}") from exc
+
+        status = response.status_code
+        if 200 <= status < 300 or status in PROBE_ACCEPTED:
+            return True
+        code = _error_code(response)
+        detail = f"GET {path}: HTTP {status}{f' error.code {code}' if code else ''} {_body_excerpt(response)}".strip()
+        if status == 401 or (status == 400 and code == 100):
+            raise AuthError(detail)
+        if status in RETRYABLE_STATUS or status >= 500:
+            raise WhatsAppError("platform_unavailable", detail)
+        raise WhatsAppError("platform_rejected", detail)
 
     def upload(self, path, mime=None):
         """Upload a local file, returning its media id.
