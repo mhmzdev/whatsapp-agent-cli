@@ -1,13 +1,18 @@
 """Voice notes to text.
 
-Gemini takes audio inline in an ordinary JSON request, so this needs nothing but
-the `requests` the package already depends on — no provider SDK, and the whole
-path is drivable by the same injected fake session the rest of the package uses
-in its tests.
+Two providers, both over plain HTTP, so this needs nothing but the `requests`
+the package already depends on — no provider SDK, and the whole path is
+drivable by the same injected fake session the rest of the package uses in its
+tests. Gemini takes the audio inline in a JSON request; OpenRouter takes it as a
+multipart upload to its transcription endpoint.
 
-The key comes from the environment (`GEMINI_API_KEY` by default), never from a
-config file and never from a flag, so it does not end up in a shell history or a
-process listing.
+The provider is always the caller's choice, `gemini` unless told otherwise. It
+is never worked out from which key happens to be set: a key exported for
+something else must not be spent because it was lying in the environment.
+
+The key comes from the environment (the chosen provider's own variable by
+default), never from a config file and never from a flag, so it does not end up
+in a shell history or a process listing.
 """
 
 import base64
@@ -17,9 +22,15 @@ from pathlib import Path
 from .errors import WhatsAppError
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
 DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_KEY_ENV = "GEMINI_API_KEY"
-PROVIDERS = ("gemini",)
+PROVIDERS = ("gemini", "openrouter")
+
+# One row per provider: the variable its key is read from, and the model used when
+# the caller names none. OpenRouter's ids are namespaced by the model's maker.
+KEY_ENVS = {"gemini": DEFAULT_KEY_ENV, "openrouter": "OPENROUTER_API_KEY"}
+MODELS = {"gemini": DEFAULT_MODEL, "openrouter": "openai/whisper-1"}
 
 # Keep what was said, in the language it was said in. A transcript that quietly
 # translates is worse than no transcript: nobody can tell it happened.
@@ -48,22 +59,40 @@ def api_key(key_env=DEFAULT_KEY_ENV, env=None):
     return (env.get(key_env) or "").strip() or None
 
 
+def key_env_for(provider, override=None):
+    """The variable a provider's key is read from: the caller's `--key-env` if given."""
+    return override or KEY_ENVS[provider]
+
+
+def model_for(provider, override=None):
+    return override or MODELS[provider]
+
+
+def check_provider(provider):
+    """Refuse an unknown provider. Separate so `recv` can do it before it polls,
+    rather than marking every voice note failed for the rest of a `--follow`."""
+    if provider not in PROVIDERS:
+        raise WhatsAppError("bad_usage",
+                            f"unknown transcription provider {provider!r}; this release has {', '.join(PROVIDERS)}"
+                            " (offline transcription is issue #20)")
+
+
 def mime_for(path):
     return MIME_BY_EXT.get(Path(path).suffix.lower())
 
 
-def transcribe(path, *, model=None, key_env=DEFAULT_KEY_ENV, language=None,
+def transcribe(path, *, model=None, key_env=None, language=None,
                provider="gemini", session=None, env=None, timeout=120):
     """Audio file in, text out. Raises a coded failure, never a partial transcript.
+
+    `key_env` names the variable holding the key; left out, it is the provider's
+    own (`GEMINI_API_KEY`, `OPENROUTER_API_KEY`).
 
     An empty answer is a failure, not an empty transcript: hisab learned that the
     hard way when a provider's error text was handed to a model as if it were
     something the user had said.
     """
-    if provider not in PROVIDERS:
-        raise WhatsAppError("bad_usage",
-                            f"unknown transcription provider {provider!r}; this release has {', '.join(PROVIDERS)}"
-                            " (offline transcription is issue #20)")
+    check_provider(provider)
     path = Path(path)
     if not path.is_file():
         raise WhatsAppError("bad_usage", f"{path} is not a file")
@@ -71,16 +100,10 @@ def transcribe(path, *, model=None, key_env=DEFAULT_KEY_ENV, language=None,
     if not mime:
         raise WhatsAppError("bad_usage", f"{path.suffix or 'that file'} is not an audio type this can read")
 
-    key = api_key(key_env, env=env)
+    key_name = key_env_for(provider, key_env)
+    key = api_key(key_name, env=env)
     if not key:
-        raise WhatsAppError("no_transcription_key", f"{key_env} is not set")
-
-    prompt = PROMPT if not language else f"{PROMPT} The speaker is using {language}."
-    body = {"contents": [{"parts": [
-        {"inline_data": {"mime_type": mime, "data": base64.b64encode(path.read_bytes()).decode()}},
-        {"text": prompt},
-    ]}]}
-    url = GEMINI_URL.format(model=model or DEFAULT_MODEL)
+        raise WhatsAppError("no_transcription_key", f"{key_name} is not set")
 
     if session is None:
         import requests
@@ -91,9 +114,10 @@ def transcribe(path, *, model=None, key_env=DEFAULT_KEY_ENV, language=None,
         transport_errors = tuple(getattr(session, "transport_errors", ()) or ())
 
     try:
-        response = session.request("POST", url, headers={"x-goog-api-key": key,
-                                                         "Content-Type": "application/json"},
-                                   json=body, timeout=timeout)
+        if provider == "gemini":
+            response = _gemini_request(session, path, mime, key, model, language, timeout)
+        else:
+            response = _openrouter_request(session, path, key, model, language, timeout)
     except transport_errors as exc:
         raise WhatsAppError("transcription_unavailable", f"transcription request failed: {exc}") from exc
 
@@ -103,20 +127,59 @@ def transcribe(path, *, model=None, key_env=DEFAULT_KEY_ENV, language=None,
     if status // 100 != 2:
         raise WhatsAppError("transcription_failed", f"transcription: HTTP {status} {_excerpt(response)}")
 
-    return _text_of(response)
+    return _gemini_text(response) if provider == "gemini" else _openrouter_text(response)
 
 
-def _text_of(response):
+def _gemini_request(session, path, mime, key, model, language, timeout):
+    prompt = PROMPT if not language else f"{PROMPT} The speaker is using {language}."
+    body = {"contents": [{"parts": [
+        {"inline_data": {"mime_type": mime, "data": base64.b64encode(path.read_bytes()).decode()}},
+        {"text": prompt},
+    ]}]}
+    url = GEMINI_URL.format(model=model_for("gemini", model))
+    return session.request("POST", url, headers={"x-goog-api-key": key,
+                                                 "Content-Type": "application/json"},
+                           json=body, timeout=timeout)
+
+
+def _openrouter_request(session, path, key, model, language, timeout):
+    """Multipart, as the endpoint expects. The file goes as bytes so nothing is left
+    open if the request fails, and with no mime type: the extension names the format.
+    `language` is sent as given — a Whisper-style endpoint wants a code such as `ur`,
+    not the word the Gemini prompt takes."""
+    data = {"model": model_for("openrouter", model)}
+    if language:
+        data["language"] = language
+    return session.request("POST", OPENROUTER_URL, headers={"Authorization": f"Bearer {key}"},
+                           data=data, files={"file": (path.name, path.read_bytes())}, timeout=timeout)
+
+
+def _json_body(response):
     try:
-        body = response.json() or {}
+        return response.json() or {}
     except Exception as exc:  # noqa: BLE001
         raise WhatsAppError("transcription_failed", "transcription returned a body that was not JSON") from exc
+
+
+def _gemini_text(response):
+    body = _json_body(response)
     try:
         text = body["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError, TypeError):
         # A refusal or a safety block answers 200 with no candidate. Returning
         # whatever is in the body would hand an error message on as speech.
         raise WhatsAppError("transcription_failed", f"transcription returned no text: {str(body)[:200]}") from None
+    return _nonempty(text)
+
+
+def _openrouter_text(response):
+    body = _json_body(response)
+    if not isinstance(body, dict) or not isinstance(body.get("text"), str):
+        raise WhatsAppError("transcription_failed", f"transcription returned no text: {str(body)[:200]}")
+    return _nonempty(body["text"])
+
+
+def _nonempty(text):
     text = (text or "").strip()
     if not text:
         raise WhatsAppError("transcription_failed", "transcription returned an empty transcript")

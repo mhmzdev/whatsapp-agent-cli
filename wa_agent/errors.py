@@ -48,7 +48,7 @@ CODES = {
     "another_poller": Error(9, "another process is polling this token; only one poller is allowed at a time", False),
     "media_too_large": Error(10, "this file is larger than the platform allows for its type", False),
     "media_url_expired": Error(11, "this download link has expired; ask for the media id again", False),
-    "no_transcription_key": Error(12, "no transcription key: set GEMINI_API_KEY, or pass --key-env NAME", False),
+    "no_transcription_key": Error(12, "no transcription key found; the detail line names the variable to set, or pass --key-env NAME", False),
     "transcription_unavailable": Error(13, "the transcription provider is unreachable right now; retrying may help", True),
     "transcription_failed": Error(14, "the transcription provider produced no usable transcript", False),
     "internal": Error(70, "something went wrong on this side", False),

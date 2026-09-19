@@ -38,11 +38,14 @@ pip install wa-agent
 
 The package, the command and the module are all `wa-agent` / `wa_agent`. (This repository is named `whatsapp-agent-cli`; that name and `whatsapp-agent` both belong to unrelated projects on PyPI.)
 
-Transcription needs no extra install — only a key, because it is an ordinary HTTP call:
+Transcription needs no extra install — only a key, because it is an ordinary HTTP call. Two providers, and the choice is always yours: `gemini` unless you say `--provider openrouter`. A key for the other one is never used in its place, however many you have exported.
 
 ```bash
 export GEMINI_API_KEY='…'
 wa-agent transcribe voice-note.ogg
+
+export OPENROUTER_API_KEY='…'
+wa-agent transcribe voice-note.ogg --provider openrouter    # --model takes an OpenRouter model id
 ```
 
 ## Get a token
@@ -78,7 +81,7 @@ A voice note keeps its shape and gains the words, so code that reads `text.body`
  "text": {"body": "call me back at six"}, "transcribed": true}
 ```
 
-Without a key, `recv --transcribe` warns once and delivers voice notes marked `transcribed: false` rather than stopping.
+`recv --transcribe` takes the same `--provider`. Without a key for it, it warns once and delivers voice notes marked `transcribed: false` rather than stopping.
 
 `recv --download` fetches each photo, document and voice note into the state directory as it arrives and adds a `path` to the message. It is opt-in because it puts a fetch inside the delivery loop; a download that fails is delivered marked with `download_error`, never dropped. With `--transcribe` as well, a voice note is fetched once, kept, and transcribed from that copy.
 
@@ -87,8 +90,8 @@ Without a key, `recv --transcribe` warns once and delivers voice notes marked `t
 | `send <text>` | Send a message. Splits a long body on paragraph boundaries, numbers the parts `(i/n)`, converts markdown to WhatsApp formatting |
 | `send --file <path>` | Upload and attach. `--media <id>` attaches something already uploaded |
 | `send --dry-run` | Print exactly what would be sent, send nothing, need no token |
-| `recv` | Messages since the last run. `--json` for one object per line, `--follow` to stream, `--typing` to show a typing indicator while you work, `--transcribe` to add words to voice notes, `--download` to keep photos and files as they arrive |
-| `transcribe <file>` | Audio in, text out. Gemini today; offline is [#20](https://github.com/mhmzdev/whatsapp-agent-cli/issues/20) |
+| `recv` | Messages since the last run. `--json` for one object per line, `--follow` to stream, `--typing` to show a typing indicator while you work, `--transcribe` (with `--provider`) to add words to voice notes, `--download` to keep photos and files as they arrive |
+| `transcribe <file>` | Audio in, text out. Gemini or OpenRouter, chosen with `--provider`; offline is [#20](https://github.com/mhmzdev/whatsapp-agent-cli/issues/20) |
 | `media get <id>` | Download to the state directory, or `--out DIR`. Prints the path and nothing else |
 | `media put <path>` | Upload, print the media id |
 | `errors` | The exit-code table |
@@ -169,7 +172,7 @@ Claude Code comes first, Codex after. Follow along on the [issues](https://githu
 ## Contributing
 
 ```bash
-cp .env.example .env    # fill in your agent token, and a Gemini key if you want transcription
+cp .env.example .env    # fill in your agent token, and a transcription key if you want it
 make dev                # a virtualenv with this checkout installed
 make check              # the check: no network, no token, a couple of seconds
 make up                 # a live inbox: text your agent and watch it land, until Ctrl-C

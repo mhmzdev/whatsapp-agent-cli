@@ -789,7 +789,8 @@ assert {"send", "recv", "media", "errors"} <= shown, f"the README stopped docume
 
 # claims that would quietly rot
 assert f'pip install wa-agent' in readme, "the README must name the distribution, not the repo"
-assert "GEMINI_API_KEY" in readme, "transcription needs a key and the README must say which"
+assert "GEMINI_API_KEY" in readme and "OPENROUTER_API_KEY" in readme, "transcription needs a key and the README must say which"
+assert "--provider" in readme, "the README must show how the provider is chosen"
 assert state.TOKEN_ENV in readme, "the token env var must be named"
 assert "docs/errors.md" in readme and "wa-agent errors" in readme
 # markdown emphasis sits inside the sentence, so match on the words, not the literal
@@ -804,7 +805,7 @@ for extra in declared_extras - {"dev"}:
 example = (ROOT / ".env.example").read_text(encoding="utf-8")
 # literals, not imports: this list is the contract, and it must not quietly shrink
 # when a module that defines one of these names is refactored away
-for variable in (state.TOKEN_ENV, cli.DEBUG_ENV, "GEMINI_API_KEY", "XDG_STATE_HOME"):
+for variable in (state.TOKEN_ENV, cli.DEBUG_ENV, "GEMINI_API_KEY", "OPENROUTER_API_KEY", "XDG_STATE_HOME"):
     assert variable in example, f"{variable} is read by the code but missing from .env.example"
 assert "gitignored" in example and "source .env" in example, ".env.example must say how it is loaded"
 assert not re.search(r"^[A-Z_]+=\S", example, re.MULTILINE), ".env.example must never carry a value"
@@ -933,6 +934,157 @@ with tempfile.TemporaryDirectory() as home:
     assert err.count("GEMINI_API_KEY is not set") == 1, f"warned once, up front: {err!r}"
     assert json.loads(out.strip())["transcribed"] is False
 print("a voice note keeps its shape and gains text.body; the audio never lands in the state dir; a failure delivers it marked; no key warns once and carries on")
+
+# --------------------------------------------------------------------------- openrouter transcription
+section("openrouter transcription")
+
+
+def openrouter_ok(text="call me back at six"):
+    return FakeResponse(200, {"text": text})
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    note = Path(tmp) / "note.ogg"
+    note.write_bytes(b"OggS" + b"0" * 64)
+    or_env = {"OPENROUTER_API_KEY": "or-key"}
+
+    # the request shape, pinned
+    session = FakeSession([openrouter_ok()])
+    got = transcribe.transcribe(note, provider="openrouter", session=session, env=or_env)
+    assert got == "call me back at six", got
+    call = session.calls[0]
+    assert call["verb"] == "POST" and call["url"] == transcribe.OPENROUTER_URL == "https://openrouter.ai/api/v1/audio/transcriptions", call["url"]
+    assert call["headers"] == {"Authorization": "Bearer or-key"} and "or-key" not in call["url"], "the key travels in a header"
+    assert call["data"] == {"model": transcribe.MODELS["openrouter"]}, call["data"]
+    assert call["files"] == {"file": ("note.ogg", note.read_bytes())}, "the audio goes as bytes, named after the file"
+    assert "json" not in call, "multipart, not a JSON body"
+    session = FakeSession([openrouter_ok()])
+    transcribe.transcribe(note, provider="openrouter", model="m-x", language="ur", session=session, env=or_env)
+    assert session.calls[0]["data"] == {"model": "m-x", "language": "ur"}, "a model and a language hint reach the form"
+
+    # the same failure mapping as Gemini
+    or_failures = [
+        (FakeResponse(503), "transcription_unavailable"),
+        (FakeResponse(429), "transcription_unavailable"),
+        (FakeResponse(408), "transcription_unavailable"),
+        (FakeTransportError("dns went away"), "transcription_unavailable"),
+        (FakeResponse(400, {"error": {"message": "bad request"}}), "transcription_failed"),
+        (FakeResponse(401, {"error": {"message": "no such key"}}), "transcription_failed"),
+        (FakeResponse(200, None, "not json"), "transcription_failed"),
+        (FakeResponse(200, {}), "transcription_failed"),
+        (FakeResponse(200, {"text": ""}), "transcription_failed"),
+        (FakeResponse(200, {"text": "   "}), "transcription_failed"),
+        (FakeResponse(200, {"text": None}), "transcription_failed"),
+    ]
+    for response, want in or_failures:
+        try:
+            transcribe.transcribe(note, provider="openrouter", session=FakeSession([response]), env={"OPENROUTER_API_KEY": "secret-or-key"})
+            raise AssertionError(f"expected {want}")
+        except errors.WhatsAppError as exc:
+            assert exc.code == want, (want, exc.code)
+            assert "secret-or-key" not in exc.message + exc.detail, "no key material in a failure"
+
+    # the provider is never guessed from which key is set
+    both = {"GEMINI_API_KEY": "gem-key", "OPENROUTER_API_KEY": "or-key"}
+    session = FakeSession([FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": "from gemini"}]}}]})])
+    assert transcribe.transcribe(note, session=session, env=both) == "from gemini"
+    assert session.calls[0]["headers"]["x-goog-api-key"] == "gem-key" and "googleapis" in session.calls[0]["url"], "the default is gemini"
+    session = FakeSession([openrouter_ok("from openrouter")])
+    assert transcribe.transcribe(note, provider="openrouter", session=session, env=both) == "from openrouter"
+    assert session.calls[0]["url"] == transcribe.OPENROUTER_URL and session.calls[0]["headers"] == {"Authorization": "Bearer or-key"}
+    session = FakeSession([])
+    try:
+        transcribe.transcribe(note, session=session, env=or_env)
+        raise AssertionError("an OpenRouter key alone must not be spent on the default provider")
+    except errors.WhatsAppError as exc:
+        assert exc.code == "no_transcription_key" and exc.exit_status == 12, exc.code
+        assert "GEMINI_API_KEY" in exc.detail, exc.detail
+    assert session.calls == [], "nothing was sent"
+
+    # a missing key names the variable actually read
+    for provider, key_env, named in [("openrouter", None, "OPENROUTER_API_KEY"), ("gemini", None, "GEMINI_API_KEY"),
+                                     ("openrouter", "MY_KEY", "MY_KEY"), ("gemini", "MY_KEY", "MY_KEY")]:
+        try:
+            transcribe.transcribe(note, provider=provider, key_env=key_env, session=FakeSession([]), env={})
+            raise AssertionError("expected no_transcription_key")
+        except errors.WhatsAppError as exc:
+            assert exc.code == "no_transcription_key" and named in exc.detail, (provider, key_env, exc.detail)
+    session = FakeSession([openrouter_ok()])
+    transcribe.transcribe(note, provider="openrouter", key_env="MY_KEY", session=session, env={"MY_KEY": "mine", "OPENROUTER_API_KEY": "other"})
+    assert session.calls[0]["headers"] == {"Authorization": "Bearer mine"}, "--key-env overrides the provider's own variable"
+    neutral = errors.CODES["no_transcription_key"].message.lower()
+    assert "gemini" not in neutral and "openrouter" not in neutral, "the fixed message names no provider"
+    doc_row = next(l for l in (ROOT / "docs" / "errors.md").read_text(encoding="utf-8").splitlines() if l.startswith("| `no_transcription_key`"))
+    assert "GEMINI_API_KEY" in doc_row and "OPENROUTER_API_KEY" in doc_row, "the document names both variables"
+
+    # the commands
+    status, out, err = run_cli(["transcribe", str(note), "--provider", "openrouter"], env=or_env, session=FakeSession([openrouter_ok("hello there")]))
+    assert status == 0 and out == "hello there\n" and err == "", (status, repr(out), err)
+    status, out, err = run_cli(["transcribe", str(note), "--provider", "openrouter"], env={}, session=FakeSession([]))
+    assert status == 12 and "error [no_transcription_key]:" in err and "detail: OPENROUTER_API_KEY is not set" in err, (status, err)
+    for provider in ("local", "openai"):
+        status, out, err = run_cli(["transcribe", str(note), "--provider", provider], env={"GEMINI_API_KEY": "k"}, session=FakeSession([]))
+        assert status == 2 and "error [bad_usage]:" in err, (provider, status, err)
+    assert "#20" in err
+
+# recv --transcribe --provider openrouter keeps the message's shape exactly as the Gemini path does
+with tempfile.TemporaryDirectory() as home:
+    env = {"HOME": home, state.TOKEN_ENV: "secret-token", "GEMINI_API_KEY": "gem-key", "OPENROUTER_API_KEY": "or-key"}
+    voice = msg("wamid.V", kind="audio", voice=True)
+    meta = FakeResponse(200, {"url": "https://lookaside.example/v", "mime_type": "audio/ogg"})
+    gem_text = FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": "kal shaam ko aana"}]}}]})
+
+    def run_recv(sub_dir, provider_args, responses, run_env=env):
+        sdir = str(Path(home) / sub_dir)
+        result = run_cli(["--state-dir", sdir, "recv", "--json", "--transcribe", *provider_args], env=run_env, session=FakeSession(responses))
+        return sdir, result
+
+    g_dir, (status, out, err) = run_recv("g", [], [envelope(voice), meta, FakeBytes(200, b"OggS-audio"), gem_text])
+    assert status == 0, (status, err)
+    via_gemini = json.loads(out.strip())
+    o_dir, (status, out, err) = run_recv("o", ["--provider", "openrouter"],
+                                         [envelope(voice), meta, FakeBytes(200, b"OggS-audio"), openrouter_ok("kal shaam ko aana")])
+    assert status == 0, (status, err)
+    via_openrouter = json.loads(out.strip())
+    assert via_openrouter == via_gemini, "the message is identical whichever provider heard it"
+    assert via_openrouter["type"] == "audio" and via_openrouter["audio"]["id"] == "media-wamid.V"
+    assert via_openrouter["text"]["body"] == "kal shaam ko aana" and via_openrouter["transcribed"] is True
+    assert store.Store(o_dir).lookup("wamid.V") == "kal shaam ko aana", "the store records the words"
+    assert "transcribed wamid.V" in err
+    assert not [p for p in Path(o_dir).resolve().rglob("*.ogg")], "the audio is not kept"
+
+    # a failing OpenRouter delivers the message marked and keeps the stream moving
+    _, (status, out, err) = run_recv("f", ["--provider", "openrouter"],
+                                     [envelope(msg("wamid.W", kind="audio")), meta, FakeBytes(200, b"OggS"), FakeResponse(503)])
+    marked = json.loads(out.strip())
+    assert status == 0 and marked["transcribed"] is False and marked["transcription_error"] == "transcription_unavailable", (status, marked)
+    assert "text" not in marked
+
+    # no OpenRouter key: one warning naming that variable, message still delivered
+    only_gemini = {"HOME": home, state.TOKEN_ENV: "secret-token", "GEMINI_API_KEY": "gem-key"}
+    _, (status, out, err) = run_recv("n", ["--provider", "openrouter"],
+                                     [envelope(msg("wamid.X", kind="audio")), meta, FakeBytes(200, b"OggS")], run_env=only_gemini)
+    assert status == 0, (status, err)
+    assert err.count("OPENROUTER_API_KEY is not set") == 1 and "GEMINI_API_KEY" not in err, f"warned once, naming the chosen provider's variable: {err!r}"
+    assert json.loads(out.strip())["transcribed"] is False, "a Gemini key was not spent in its place"
+
+    # an unknown provider is refused before anything is requested
+    session = FakeSession([])
+    status, out, err = run_cli(["--state-dir", str(Path(home) / "u"), "recv", "--transcribe", "--provider", "local"], env=env, session=session)
+    assert status == 2 and "error [bad_usage]:" in err and session.calls == [], (status, err, session.calls)
+
+# no OpenAI provider, endpoint or key name anywhere the package ships or documents
+checked = {**{f"wa_agent/{p.name}": p.read_text(encoding="utf-8") for p in (ROOT / "wa_agent").glob("*.py")},
+           **{name: (ROOT / name).read_text(encoding="utf-8") for name in ("README.md", ".env.example", "docs/errors.md")}}
+for name, body in checked.items():
+    assert not re.search(r"OPENAI_", body), f"{name} names an OpenAI key variable"
+    assert "api.openai.com" not in body, f"{name} names an OpenAI endpoint"
+assert "openai" not in transcribe.PROVIDERS and "openai" not in transcribe.KEY_ENVS, "OpenAI is not a provider"
+# An OpenRouter model id may start with openai/; the one place it lives is the MODELS constant.
+mentions = [(name, line.strip()) for name, body in checked.items() for line in body.splitlines() if "openai" in line.lower()]
+assert mentions == [("wa_agent/transcribe.py", 'MODELS = {"gemini": DEFAULT_MODEL, "openrouter": "openai/whisper-1"}')], \
+    f"openai appears outside the MODELS constant: {mentions}"
+print("openrouter: request shape pinned, failures mapped as for Gemini, the provider never guessed from a key, a missing key names its own variable, recv keeps the message identical, and OpenAI is nowhere but a model id")
 
 # --------------------------------------------------------------------------- recv --download
 section("recv --download")
