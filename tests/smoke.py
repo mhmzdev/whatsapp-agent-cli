@@ -917,6 +917,60 @@ with tempfile.TemporaryDirectory() as home:
     assert json.loads(out.strip())["transcribed"] is False
 print("a voice note keeps its shape and gains text.body; the audio never lands in the state dir; a failure delivers it marked; no key warns once and carries on")
 
+# --------------------------------------------------------------------------- recv --download
+section("recv --download")
+with tempfile.TemporaryDirectory() as home:
+    env = {"HOME": home, state.TOKEN_ENV: "secret-token", "GEMINI_API_KEY": "gem-key"}
+    sdir = str(Path(home) / "state")
+    media_dir = Path(sdir).resolve() / "media"
+    photo_meta = FakeResponse(200, {"url": "https://lookaside.example/p", "mime_type": "image/jpeg"})
+
+    # a photo lands in media/ and the message says where
+    photo = msg("wamid.P", kind="image", caption="the whiteboard")
+    session = FakeSession([envelope(photo, msg("wamid.T2", "typed"), next_offset="off-p"), photo_meta, FakeBytes(200, b"JPEGDATA")])
+    status, out, err = run_cli(["--state-dir", sdir, "recv", "--json", "--download"], env=env, session=session)
+    assert status == 0, (status, err)
+    got = [json.loads(line) for line in out.strip().splitlines()]
+    assert Path(got[0]["path"]).read_bytes() == b"JPEGDATA", got[0]
+    assert Path(got[0]["path"]).parent == media_dir, got[0]["path"]
+    assert "path" not in got[1], "a text message gains no path"
+    assert sum(1 for c in session.calls if "/media/" in c["url"]) == 1, "one metadata hop per photo"
+
+    # the human line shows where the file went
+    session = FakeSession([envelope(msg("wamid.P2", kind="image"), next_offset="off-p2"), photo_meta, FakeBytes(200, b"J")])
+    status, out, err = run_cli(["--state-dir", sdir, "recv", "--download"], env=env, session=session)
+    assert "-> " in out and "wamid.P2" in out, out
+
+    # a failed download is delivered marked, and the batch still completes
+    session = FakeSession([envelope(msg("wamid.Q", kind="document"), next_offset="off-q"),
+                           FakeResponse(200, {"url": "https://lookaside.example/q", "mime_type": "application/pdf"}),
+                           FakeBytes(404)])
+    status, out, err = run_cli(["--state-dir", sdir, "recv", "--json", "--download"], env=env, session=session)
+    assert status == 0, (status, err)
+    marked = json.loads(out.strip())
+    assert marked["download_error"] == "media_url_expired" and "path" not in marked, marked
+    assert "could not download wamid.Q" in err
+    assert store.Store(sdir).offset() == "off-q", "a failed download never stops the batch"
+
+    # --download with --transcribe: the voice note is fetched once, kept, and transcribed from the kept copy
+    voice = msg("wamid.VK", kind="audio", voice=True)
+    session = FakeSession([envelope(voice, next_offset="off-vk"),
+                           FakeResponse(200, {"url": "https://lookaside.example/v", "mime_type": "audio/ogg"}),
+                           FakeBytes(200, b"OggS-kept"),
+                           FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": "kept and heard"}]}}]})])
+    status, out, err = run_cli(["--state-dir", sdir, "recv", "--json", "--download", "--transcribe"], env=env, session=session)
+    assert status == 0, (status, err)
+    heard = json.loads(out.strip())
+    assert heard["text"]["body"] == "kept and heard" and heard["transcribed"] is True, heard
+    assert Path(heard["path"]).read_bytes() == b"OggS-kept", "with --download the audio is kept"
+    assert sum(1 for c in session.calls if "lookaside" in c["url"]) == 1, "and fetched exactly once"
+
+    # without --download, recv makes no media request at all
+    session = FakeSession([envelope(msg("wamid.NOD", kind="image"), next_offset="off-nod")])
+    status, out, err = run_cli(["--state-dir", sdir, "recv", "--json"], env=env, session=session)
+    assert status == 0 and not any("/media/" in c["url"] for c in session.calls), session.calls
+print("a photo lands in media/ with its path in the message; a failed download is delivered marked; --download with --transcribe fetches once and keeps it; no --download, no media request")
+
 # --------------------------------------------------------------------------- module entry point
 section("module entry point")
 proc = subprocess.run([sys.executable, "-m", "whatsapp_agent", "--version"], capture_output=True, text=True, cwd=ROOT,

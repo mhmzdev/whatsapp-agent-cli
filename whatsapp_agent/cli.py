@@ -14,13 +14,12 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import time
 import traceback
 from pathlib import Path
 
 from . import __version__
-import tempfile
-
 from . import media as media_types
 from . import transcribe as transcription
 from .client import WhatsApp
@@ -110,6 +109,8 @@ def _human(message):
         media_id = payload.get("id", "")
         caption = payload.get("caption", "")
         what = f"<{kind}{' ' + media_id if media_id else ''}>{' ' + caption if caption else ''}"
+    if message.get("path"):
+        what = f"{what} -> {message['path']}"
     return f"{when}  {who}  {what}"
 
 
@@ -157,20 +158,52 @@ def _audio_of(message):
     return message.get("audio") or {}
 
 
-def _transcribe_into(message, client, args, env, session, tmp_root):
-    """Fetch the voice note, transcribe it, and fold the words into the message.
+MEDIA_KINDS = ("image", "document", "audio", "video", "sticker")
 
-    The audio is deleted immediately either way: polling should not quietly
-    accumulate a recording of everything anyone ever said. The media id stays in
-    the message, so the bytes can be fetched again on purpose with `media get`.
+
+def _media_id_of(message):
+    """The media id a message carries, or None for a text message."""
+    kind = message.get("type")
+    if kind not in MEDIA_KINDS:
+        return None
+    return (message.get(kind) or {}).get("id")
+
+
+def _download_into(message, client, directory):
+    """Fetch a message's media into the state directory and record where it went.
+
+    Opt-in (`recv --download`) because it puts an unbounded fetch inside the
+    delivery path; without the flag `recv` makes no media request at all. A failed
+    download never costs the message — the same rule transcription follows.
+    """
+    media_id = _media_id_of(message)
+    if not media_id:
+        return
+    try:
+        path, _mime = client.download(media_id, Path(directory) / "media")
+    except WhatsAppError as exc:
+        message["download_error"] = exc.code
+        print(f"warning: could not download {message.get('id')}: {exc.message}", file=sys.stderr, flush=True)
+        return
+    message["path"] = str(path)
+
+
+def _transcribe_into(message, client, args, env, session, tmp_root):
+    """Transcribe a voice note and fold the words into the message.
+
+    If `--download` already fetched it, the kept copy is used, so the audio is
+    fetched exactly once. Otherwise it goes to a temp directory and is deleted
+    immediately either way: polling without --download should not quietly
+    accumulate a recording of everything anyone ever said.
     """
     audio = _audio_of(message)
     media_id = (audio or {}).get("id")
     if not media_id:
         return
+    kept = message.get("path")
     with tempfile.TemporaryDirectory(dir=tmp_root) as tmp:
         try:
-            path, _mime = client.download(media_id, tmp)
+            path = Path(kept) if kept else client.download(media_id, tmp)[0]
             text = transcription.transcribe(path, model=args.transcribe_model, key_env=args.key_env,
                                             language=args.language, session=session, env=env)
         except WhatsAppError as exc:
@@ -228,6 +261,9 @@ def _recv(args, env=None, session=None, sleep=time.sleep):
     store = Store(directory)
     client = WhatsApp(resolve_token(args.token_file, env=env), session=session)
 
+    if args.download:
+        _sweep(directory, args.keep_hours)
+
     if args.transcribe and not transcription.api_key(args.key_env, env=env):
         # Once, up front — not once per voice note, and not a reason to refuse to run.
         print(f"warning: {args.key_env} is not set; voice notes will arrive untranscribed",
@@ -258,6 +294,8 @@ def _recv(args, env=None, session=None, sleep=time.sleep):
             for message in messages:
                 if store.seen(message.get("id")):
                     continue
+                if args.download:
+                    _download_into(message, client, directory)
                 if args.transcribe and _audio_of(message):
                     _transcribe_into(message, client, args, env, session, directory)
                 _deliver(message, store, client, args.json, args.typing)
@@ -302,6 +340,10 @@ def build_parser():
                         help="environment variable holding the transcription key (default: %(default)s)")
     p_recv.add_argument("--language", metavar="NAME", default=None, help="hint the spoken language, e.g. urdu")
     p_recv.add_argument("--typing", action="store_true", help="mark each delivered message read and show the typing indicator")
+    p_recv.add_argument("--download", action="store_true",
+                        help="fetch photos, documents and voice notes into the state dir as they arrive; adds a path to the message")
+    p_recv.add_argument("--keep-hours", type=int, default=24, metavar="H",
+                        help="with --download, sweep downloads older than this (default: %(default)s; 0 disables)")
     p_recv.add_argument("--limit", type=int, default=50, metavar="N", help="messages per poll (default: %(default)s)")
     p_recv.add_argument("--timeout", type=int, default=20, metavar="S", help="seconds to hold one poll open, max 25 (default: %(default)s)")
     p_recv.add_argument("--replay", action="store_true", help="on a first run, ask for the backlog the platform still holds (up to 30 days)")
